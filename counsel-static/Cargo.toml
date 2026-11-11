@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# counsel-static — the Phase 4 valve.
+#
+# Translates a restricted pure-integer Rust subset into Briev `defn`s and
+# discharges the contracts through `brievc --verify-bodies`, the real prover in
+# the Briev compiler (briev-lang commit c0ce60dc). This is static verification
+# "the way Briev does it": the same gate that proves Briev's own bodies proves
+# the translated ones.
+
+[package]
+name = "counsel-static"
+version = "0.1.0"
+edition = "2021"
+description = "Static pre/post verification for a restricted pure-integer Rust subset, discharged through Briev's body prover."
+license = "Apache-2.0 WITH LLVM-exception"
+keywords = ["verification", "contracts", "rust", "briev", "static-analysis"]
+categories = ["development-tools::testing", "compilers"]
+
+[dependencies]
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }

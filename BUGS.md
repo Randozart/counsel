@@ -73,3 +73,69 @@ the binding generators advertise, or (b) teach the Rust binding generator to
 render the slot/closure signature (`fn(ptr, i64) -> i64`) and have Counsel
 build a thunk. Until then, cross-ABI callbacks are not a supported surface;
 pure Int-ABI checks are.
+
+## 2026-11-11 — Briev: dangling `ret` when every path terminates in guards
+
+**Status:** documented (reported upstream); worked around in the translator.
+
+### What failed
+
+Translating `if a > 5 { a } else { 0 }` naively (both arms behind a `when`
+guard) makes the *Rust* test suite fail with an LLVM verifier error:
+
+```
+opt: .../counsel_static.ll:6537:11: error: use of undefined value '%t17'
+  ret i64 %t17
+error: opt failed for '.../counsel_static.ll'
+```
+
+### Minimal repro (Briev only, no Rust involved)
+
+```briev
+// FAILS — every path terminates inside a `when`, no trailing `term`
+defn f(a: Int) [a >= 0][term >= 0] -> Int {
+    when a > 5 { term a; };
+    when a <= 5 { term 0; };
+};
+```
+
+```briev
+// COMPILES — identical semantics, but a trailing `term` exists
+defn g(a: Int) [a >= 0][term >= 0] -> Int {
+    when a > 5 { term a; };
+    term 0;
+};
+```
+
+### Evidence
+
+Generated IR for `f`:
+
+```llvm
+  guard.then13:
+  %t15 = add i64 0, 0
+  ret i64 %t15
+  guard.end13:
+  ret i64 %t17        ; %t17 is never defined
+```
+
+The emitter's implicit-return fallback references a result register that was
+never materialised, so `opt` rejects the module.
+
+### Analysis
+
+`--verify-bodies` itself was *correct* here (no contract violation reported);
+the failure is codegen, in the LLVM backend's guard/termination handling when
+a function body has no trailing statement after fully-terminating guards.
+
+### Workaround shipped
+
+`counsel-static` emits the else body **unguarded** when both arms terminate
+(reaching it implies the guard failed), which is both simpler and avoids the
+shape. When the then-arm can fall through, the inverted guard is kept.
+
+### Path to permanent fix (Briev backend)
+
+Emit only reachable terminators: when the guard's end block is unreachable
+every path has already returned, emit `unreachable` (or nothing) instead of a
+`ret` on an undefined register.

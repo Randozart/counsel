@@ -19,3 +19,9 @@ categories = ["development-tools::testing", "compilers"]
 [dependencies]
 
 [build-dependencies]
+# 2026-11-11 (Phase 4 valve): counsel-static translates a restricted
+# pure-integer Rust subset into Briev defns and discharges them through
+# `brievc --verify-bodies` (landed in briev-lang c0ce60dc).
+[workspace]
+members = ["counsel-static"]
+resolver = "2"

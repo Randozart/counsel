@@ -80,17 +80,62 @@ and the feasibility study + decision record in
 - **Phase 1 (A1)** — Briev-computed check predicates + Rust `contract` combinator. ✅
 - **Phase 2** — cross-verification sampler (`verify`). ✅
 - **Phase 3 (A2)** — pure-Briev predicate-as-data (`Op` + `eval_pred`). ✅
-- **Phase 4** — stretch slice of static proof (research; optional).
+- **Phase 4** — static proof: `counsel-static` translates a restricted
+  pure-integer Rust subset into Briev `defn`s and discharges the contracts
+  through `brievc --verify-bodies`. ✅
 
-## Known limitation
+## Static verification (Phase 4)
 
-Cross-ABI **function-pointer parameters are not runtime-safe in Briev** today:
+The `counsel-static` crate proves contracts **statically** — no runtime checks,
+no sampling. It reuses Briev's own body prover (the `--verify-bodies` gate in
+`briev-lang`), so the same machinery that proves Briev functions proves the
+translated Rust ones.
+
+```rust
+use counsel_static::{check_source, Outcome};
+
+let report = check_source(r#"
+    #[requires(a >= 0)]
+    #[ensures(term == a + a)]
+    fn double(a: i64) -> i64 { a + a }
+"#)?;
+assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
+# Ok::<(), counsel_static::Error>(())
+```
+
+A body that contradicts its contract is caught at check time:
+
+```rust
+let report = check_source("#[ensures(term == 0)]\nfn lies(a: i64) -> i64 { 5 }")?;
+assert_eq!(report.verdicts[0].outcome, Outcome::Violated);
+```
+
+Three outcomes, honestly distinguished: `Proven` (discharged), `Violated`
+(a concrete counterexample exists), and `Unproven` (the prover could not
+decide — advisory, never a false pass).
+
+**Subset** (deliberately narrow): `i64` parameters and return, integer
+arithmetic, comparisons, `&&`/`||`/`!`, `let`, `if`/`else`, `return`, and a
+trailing expression. Anything else is rejected as unsupported rather than
+approximated — a wrong translation would be a wrong proof.
+
+Requires a `brievc` built from `briev-lang` `c0ce60dc` or later; set `BRIEVC`
+to point at one. Without it, twin tests skip and the translator tests still run.
+
+## Known limitations
+
+**Cross-ABI function-pointer parameters are not runtime-safe in Briev** today:
 the C-binding generator advertises a flat `int64_t (*)(int64_t)`, but the LLVM
 backend lowers the param to a closure/self convention (`load target from the
 slot`, call `(slot, arg)`) — a flat `extern "C" fn` host binding SIGSEGVs.
 Counsel therefore transports predicates as **data** (pure Int ABI), never as
 callbacks. Full diagnostic + the Briev backend fix path in
 [`BUGS.md`](BUGS.md).
+
+**Briev codegen bug found by the valve:** a function whose every path
+terminates inside `when` guards (with no trailing `term`) emits a dangling
+`ret` on an undefined register. `counsel-static` avoids the shape; minimal
+repro and the upstream fix path are in [`BUGS.md`](BUGS.md).
 
 ## License
 
