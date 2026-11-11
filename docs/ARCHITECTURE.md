@@ -15,7 +15,7 @@ reported as a pass.
 ## 1. The two halves at a glance
 
 ```
-                        bridge/counsel.bv   (Briev-authored machinery)
+                        bridge/counsel.bv   (Briev predicate core)
                                  │
               brievc build --library  →  libcounsel.a
                                  │            ▲
@@ -40,6 +40,20 @@ reported as a pass.
 The runtime half **calls** Briev-compiled code; the static half **generates**
 Briev code and asks Briev's own prover about it. Neither re-implements a prover
 in Rust.
+
+### Who owns what (measured 2026-11-11)
+
+| Layer | Language | Lines | Where |
+|---|---|---:|---|
+| Predicates, equality, opcode dispatch | **Briev** | 114 | `bridge/counsel.bv` |
+| Body prover (paths, bounds, tri-state verdicts) | Rust | 1,461 | `briev-lang/src/analysis/{verify_bodies,symbolic}.rs` |
+| Rust frontend, compiler discovery, report parsing | Rust | ~640 | `counsel-static/src/` |
+| Runtime orchestration + sampler loop | Rust | 253 | `src/lib.rs` |
+
+The orchestration (pre → body → post, and the sampling loop) is *designed* to
+be Briev and will move there once Briev's cross-ABI callback ABI is fixed
+(§2.2, `BUGS.md`, and `docs/plans/2026-11-11-briev-share.md`). Until then the
+crate must not claim more Briev than it has.
 
 ---
 

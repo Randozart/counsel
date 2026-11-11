@@ -11,7 +11,7 @@
 name = "counsel"
 version = "0.1.0"
 edition = "2021"
-description = "Basic pre/post-condition verification for Rust, with the verification machinery authored in Briev and compiled to native. Lighter than Kani."
+description = "Static and runtime pre/post-condition verification for Rust: the predicate core is authored in Briev and compiled to native, while contracts are discharged by Briev's own body prover. Lighter than Kani."
 license = "Apache-2.0 WITH LLVM-exception"
 keywords = ["verification", "contracts", "precondition", "postcondition", "briev"]
 categories = ["development-tools::testing", "compilers"]

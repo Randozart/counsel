@@ -1,9 +1,23 @@
 # Counsel
 
-Basic **pre/post-condition verification** for Rust, with the verification
-machinery **authored in Briev** — the contract-first language from the
+Basic **pre/post-condition verification** for Rust. The **predicate core is
+authored in Briev** — the contract-first language from the
 [`briev-lang`](https://github.com/) project — compiled to a native static
-library and linked into a Cargo crate.
+library and linked into a Cargo crate; the body prover that discharges static
+contracts is part of the Briev compiler itself.
+
+**Who owns what** (measured 2026-11-11, see
+[`docs/plans/2026-11-11-briev-share.md`](docs/plans/2026-11-11-briev-share.md)):
+
+| Layer | Language | Where |
+|---|---|---|
+| Predicates, equality, opcode dispatch | **Briev** (114 lines) | `bridge/counsel.bv` |
+| Body prover (paths, bounds, tri-state verdicts) | Rust (1,461 lines) | `briev-lang/src/analysis/verify_bodies.rs`, `symbolic.rs` |
+| Rust frontend, compiler discovery, report parsing | Rust (~640 lines) | `counsel-static/src/` |
+| Runtime orchestration and sampler loop | Rust (253 lines) | `src/lib.rs` |
+
+The orchestration belongs in Briev too, and will move there once Briev's
+cross-ABI callback ABI is fixed (see `BUGS.md` and the plan above).
 
 Positioned as **lighter than Kani**: it enforces obligations at runtime and
 cross-verifies a function against a shadow reference. It is not a full
