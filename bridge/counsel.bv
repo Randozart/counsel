@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// bridge/counsel.bv — Counsel verification machinery (Briev-authored core).
+//
+// Phase 0 (scaffold spike): predictable, ABI-clean exports that prove the
+// full build path (brievc build --library → bindings → Rust) and establish
+// that Briev's own contract prover agrees on our code.
+//
+// Phase 1+ grows this into the obligation evaluator, bound/environment
+// handling, failure reporter, and cross-verification sampler.
+
+import "glue/c.bv";
+
+// add — clean C ABI plumbing-validation export.
+// Guarantees: returns the sum of its two Int arguments.
+export defn add(a: Int, b: Int) -> Int {
+    term a + b;
+};
+
+// within — runtime check-predicate helper (seed of the obligation evaluator).
+// Returns 1 when `x` lies in the inclusive range [lo, hi]; else 0. Guard-first
+// so only the true bound path evaluates the range check.
+export defn within(x: Int, lo: Int, hi: Int) -> Int {
+    when x >= lo && x <= hi {
+        term 1;
+    };
+    term 0;
+};
+
+// step_up — one txn carrying a real, provable contract.
+// Pre: `i` is below `cap`; post/goal: `i` has advanced to `cap`. The compiler
+// proves the contract; a trivial `[true][true]` would be a compile error, so
+// this also dogfoods Briev's own verification on our machinery.
+txn step_up(i: Int, cap: Int) [i < cap][i == cap] -> Int {
+    term i + 1;
+};

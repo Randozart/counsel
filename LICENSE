@@ -1,0 +1,13 @@
+# Counsel — licensing metadata
+#
+# The Counsel crate is licensed under Apache-2.0 WITH LLVM-exception, matching
+# the parent Briev language project. The full terms of the Apache License,
+# Version 2.0 apply (see the `Apache-2.0` text); the LLVM-exception is appended
+# per the LLVM exception in the parent project.
+#
+# Reference: https://llvm.org/docs/DeveloperPolicy.html#new-llvm-project-license-framework
+# Full Apache-2.0 text: https://www.apache.org/licenses/LICENSE-2.0
+
+Please see the parent project's LICENSE/NOTICE for the authoritative full
+license text (Apache-2.0 WITH LLVM-exception). SPDX-License-Identifier on each
+source file is the source of truth for this crate.

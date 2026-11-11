@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# Cargo.toml — Counsel crate manifest.
+#
+# The verification machinery is authored in Briev (bridge/counsel.bv) and
+# compiled to a native static library by build.rs, which also links it into
+# this crate. Rust is the thin facade (safe API over the C-ABI bindings in
+# src/bindings.rs).
+
+[package]
+name = "counsel"
+version = "0.1.0"
+edition = "2021"
+description = "Basic pre/post-condition verification for Rust, with the verification machinery authored in Briev and compiled to native. Lighter than Kani."
+license = "Apache-2.0 WITH LLVM-exception"
+keywords = ["verification", "contracts", "precondition", "postcondition", "briev"]
+categories = ["development-tools::testing", "compilers"]
+
+[dependencies]
+
+[build-dependencies]

@@ -1,0 +1,7 @@
+# Build artifacts
+/target
+Cargo.lock
+
+# Editor/OS noise
+*.swp
+.DS_Store
