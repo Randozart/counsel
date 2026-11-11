@@ -9,10 +9,13 @@ Positioned as **lighter than Kani**: it enforces obligations at runtime and
 cross-verifies a function against a shadow reference. It is not a full
 model-checker over the Rust memory model.
 
-> **Status: Phases 0–3 shipped (committed).** The full path —
+> **Status: Phases 0–4 shipped (committed).** The full path —
 > `bridge/counsel.bv` → `brievc build --library` → C-ABI bindings → safe Rust
 > facade — is working end-to-end. Every Briev export carries and proves its
 > own contract; every obligation's truth value is Briev-computed.
+>
+> **Docs:** [Architecture](docs/ARCHITECTURE.md) (how it works) ·
+> [Examples](docs/EXAMPLES.md) (worked end-to-end walks).
 
 ## How it works
 
@@ -28,6 +31,13 @@ src/lib.rs          ← safe Rust facade: contract, verify, satisfies, checks
 `build.rs` shells to `brievc` (selectable via the `BRIEVC` env var, default
 `brievc` on PATH), compiles the `.bv` machinery to a static library, and links
 it into the crate.
+
+The other half, `counsel-static`, proves contracts **before** the program runs
+by translating a restricted pure-integer Rust subset into Briev `defn`s and
+discharging them through `brievc --verify-bodies`.
+
+Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
 
 ## Quick start
 
@@ -72,7 +82,12 @@ assert_eq!(verify(|x| x * 2, |x| x * 2, 20, |i| i as i64), Verdict::Pass);
 
 ## Phase plan
 
-See [`docs/plans/2026-11-11-counsel-briev-verify.md`](docs/plans/2026-11-11-counsel-briev-verify.md)
+Primary docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (how the two halves
+work, and what is and is not guaranteed) and
+[`docs/EXAMPLES.md`](docs/EXAMPLES.md) (worked end-to-end examples with real
+prover output).
+
+Background: [`docs/plans/2026-11-11-counsel-briev-verify.md`](docs/plans/2026-11-11-counsel-briev-verify.md)
 and the feasibility study + decision record in
 [`BRIEV-RUST-VERIFY-PLAN.md`](../BRIEV-RUST-VERIFY-PLAN.md).
 
