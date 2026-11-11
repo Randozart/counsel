@@ -78,3 +78,38 @@ export defn eq(a: Int, b: Int) -> Int {
     };
     term 0;
 };
+
+// eval_pred — centralized predicate dispatch, pure Int ABI (Ambition A2).
+//
+// The predicate is transported to Briev as *data* (opcode + operands), not as
+// a Rust closure: Rust sends `(op, a, b)` and Briev evaluates the predicate
+// against `x`, returning 1 when it holds. This keeps predicate evaluation
+// authored in Briev while the cross-ABI callback path stays unsupported
+// (see BUGS.md) — the predicate is data crossing a pure Int ABI.
+//
+// Opcodes: 0=GT `x > a`, 1=GE `x >= a`, 2=LT `x < a`, 3=LE `x <= a`,
+// 4=IN `a <= x <= b`. Unknown opcodes return 0 (does not hold).
+// Guarantees: returns 1 exactly when the op-selected inequality holds on x.
+export defn eval_pred(op: Int, a: Int, b: Int, x: Int) -> Int {
+    when op == 0 {
+        when x > a { term 1; };
+        term 0;
+    };
+    when op == 1 {
+        when x >= a { term 1; };
+        term 0;
+    };
+    when op == 2 {
+        when x < a { term 1; };
+        term 0;
+    };
+    when op == 3 {
+        when x <= a { term 1; };
+        term 0;
+    };
+    when op == 4 {
+        when x >= a && x <= b { term 1; };
+        term 0;
+    };
+    term 0;
+};

@@ -32,4 +32,7 @@ extern "C" {
     pub fn is_nonneg(x: i64) -> i64;
     /// Briev export `eq`: 1 if `a == b`, else 0.
     pub fn eq(a: i64, b: i64) -> i64;
+    /// Briev export `eval_pred`: predicate-as-data dispatch over `x`.
+    /// op: 0=GT,1=GE,2=LT,3=LE,4=IN; returns 1 when the inequality holds.
+    pub fn eval_pred(op: i64, a: i64, b: i64, x: i64) -> i64;
 }

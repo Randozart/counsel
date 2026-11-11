@@ -138,6 +138,78 @@ pub fn eq(a: i64, b: i64) -> bool {
     unsafe { bindings::eq(a, b) == 1 }
 }
 
+/// A `<,>,<=,>=,in-range` predicate transported to Briev as data (Ambition A2).
+///
+/// The predicate is *not* a Rust closure: it is a tagged variant, serialised to
+/// an integer opcode plus its operand(s), and evaluated by the Briev-authored
+/// `eval_pred` export. This is the pure-Briev-predicate path under the
+/// cross-ABI-callback blocker (see BUGS.md) — data crosses the pure Int ABI;
+/// Briev owns the truth value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    /// `x > a`.
+    Gt(i64),
+    /// `x >= a`.
+    Ge(i64),
+    /// `x < a`.
+    Lt(i64),
+    /// `x <= a`.
+    Le(i64),
+    /// `a <= x <= b`.
+    In { lo: i64, hi: i64 },
+}
+
+impl Op {
+    /// The Briev `eval_pred` opcode for this variant.
+    fn code(self) -> i64 {
+        match self {
+            Op::Gt(_) => 0,
+            Op::Ge(_) => 1,
+            Op::Lt(_) => 2,
+            Op::Le(_) => 3,
+            Op::In { .. } => 4,
+        }
+    }
+
+    /// The operands `(a, b)` transported to Briev; `b` is unused for the
+    /// unary variants.
+    fn operands(self) -> (i64, i64) {
+        match self {
+            Op::Gt(a) => (a, 0),
+            Op::Ge(a) => (a, 0),
+            Op::Lt(a) => (a, 0),
+            Op::Le(a) => (a, 0),
+            Op::In { lo, hi } => (lo, hi),
+        }
+    }
+}
+
+/// Whether `op` holds for `x`, evaluated in Briev (`eval_pred`).
+///
+/// The predicate is passed to Briev as data; Briev computes the truth value.
+///
+/// # Example
+/// ```
+/// use counsel::{Op, satisfies};
+/// assert!(satisfies(Op::Gt(0), 5));
+/// assert!(satisfies(Op::In { lo: 0, hi: 10 }, 5));
+/// assert!(!satisfies(Op::Lt(0), 5));
+/// ```
+pub fn satisfies(op: Op, x: i64) -> bool {
+    let (a, b) = op.operands();
+    // Safety: `eval_pred` is a pure C ABI export with no state dependency.
+    unsafe { bindings::eval_pred(op.code(), a, b, x) == 1 }
+}
+
+/// Verdict form of [`satisfies`]: [`Verdict::Pass`] when `op` holds for `x`.
+pub fn check_op(op: Op, x: i64) -> Verdict {
+    if satisfies(op, x) {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(format!("{x} fails {:?}", op))
+    }
+}
+
 /// Cross-verifies `original` against a `shadow` reference over `n` samples.
 ///
 /// For each sample `i` in `0..n`, the input generator `gen(i)` is fed to both

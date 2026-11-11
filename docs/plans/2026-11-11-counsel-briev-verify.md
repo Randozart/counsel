@@ -1,7 +1,7 @@
 # Counsel — Active Plan (Phases 0–4)
 
 **Date:** 2026-11-11
-**Status:** Phase 1 (A1 reliable) and Phase 2 (sampler) complete, committed. Next: Phase 3 (A2).
+**Status:** Phases 1–3 complete, committed. Phase 4 (A2 singleton / stretch-B) is the remaining research slice.
 **Feasibility/decision source:** `../BRIEV-RUST-VERIFY-PLAN.md`
 
 ## Purpose
@@ -107,6 +107,12 @@ uses `bindings::eq` for each pair; uses a generator `gen(i)` per sample.
 
 - Tiny contract DSL: `pre(Gt(Var(x), Lit(0)))`, serialized to the Briev side,
   evaluated *in Briev*. Removes the "Rust closures do the checking" caveat.
+
+**Status: DONE (2026-11-11).** The predicate crosses to Briev as **data**, not a
+closure: `Op { Gt, Ge, Lt, Le, In }` serialises to an opcode+operands and Briev's
+`eval_pred(op, a, b, x)` computes the truth value (pure Int ABI; works under the
+cross-ABI-callback blocker). Rust `satisfies(op, x)` / `check_op(op, x)`. `cargo
+test` 16/16 + 4 doctests; `cargo build` clean; praetor PASS on src/tests.
 
 ## Phase 4 — stretch slice of Ambition B (optional / research)
 
