@@ -67,3 +67,14 @@ export defn is_nonneg(x: Int) -> Int {
     };
     term 0;
 };
+
+// eq — pure Int ABI output-equivalence primitive for the Phase-2 sampler.
+// Returns 1 iff `a == b`. Used by the Rust sampler to compare each pair of
+// original-vs-shadow outputs through Briev-computed equality.
+// Guarantees: returns 1 exactly when a == b.
+export defn eq(a: Int, b: Int) -> Int {
+    when a == b {
+        term 1;
+    };
+    term 0;
+};

@@ -30,4 +30,6 @@ extern "C" {
     pub fn is_positive(x: i64) -> i64;
     /// Briev export `is_nonneg`: 1 if `x >= 0`, else 0.
     pub fn is_nonneg(x: i64) -> i64;
+    /// Briev export `eq`: 1 if `a == b`, else 0.
+    pub fn eq(a: i64, b: i64) -> i64;
 }

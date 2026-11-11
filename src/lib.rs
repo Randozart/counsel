@@ -128,3 +128,54 @@ pub fn contract(
     }
     Verdict::Pass
 }
+
+/// Whether two integers are equal, computed by Briev (`eq`).
+///
+/// The sampler [`verify`] uses this to compare each original-vs-shadow output
+/// pair through Briev-computed equality.
+pub fn eq(a: i64, b: i64) -> bool {
+    // Safety: `eq` is a pure C ABI export with no state dependency.
+    unsafe { bindings::eq(a, b) == 1 }
+}
+
+/// Cross-verifies `original` against a `shadow` reference over `n` samples.
+///
+/// For each sample `i` in `0..n`, the input generator `gen(i)` is fed to both
+/// `original` and `shadow`; the outputs must be Briev-equal on every sample.
+/// This ports Briev's `cross_verify_samples` / `:=` idea: run the function
+/// under test alongside a reference, assert IO-equivalence, report the first
+/// divergence. Sampling, ordering, and the verdict are Rust-side; each
+/// equality check is Briev-computed (`eq`).
+///
+/// Returns [`Verdict::Pass`] when all `n` samples agree, otherwise
+/// [`Verdict::Fail`] naming the first divergent sample, its input, the
+/// expected (shadow) output, and the actual (original) output.
+///
+/// # Example
+/// ```
+/// use counsel::{Verdict, verify};
+/// // original and shadow both double their input; they agree on every sample.
+/// let ok = verify(|x| x * 2, |x| x * 2, 20, |i| i as i64);
+/// assert_eq!(ok, Verdict::Pass);
+/// // a divergent shadow (adds 1) is caught at sample 0: input 0, expected 1, actual 0.
+/// let bad = verify(|x| x * 2, |x| x * 2 + 1, 5, |i| i as i64);
+/// assert_eq!(bad, Verdict::Fail("sample 0 diverged on input 0: expected 1, got 0".into()));
+/// ```
+pub fn verify(
+    original: impl Fn(i64) -> i64,
+    shadow: impl Fn(i64) -> i64,
+    n: usize,
+    gen: impl Fn(usize) -> i64,
+) -> Verdict {
+    for i in 0..n {
+        let input = gen(i);
+        let expected = shadow(input);
+        let actual = original(input);
+        if !eq(actual, expected) {
+            return Verdict::Fail(format!(
+                "sample {i} diverged on input {input}: expected {expected}, got {actual}"
+            ));
+        }
+    }
+    Verdict::Pass
+}

@@ -6,7 +6,7 @@
 // library, links it, and these tests drive the Briev-authored exports through
 // the safe facade. If this passes, the scaffold spike's exit criteria are met.
 
-use counsel::{add, contract, in_range, nonneg, positive, within, Verdict};
+use counsel::{add, contract, eq, in_range, nonneg, positive, verify, within, Verdict};
 
 /// The Briev-authored `add` export computes a sum through the C ABI.
 #[test]
@@ -91,5 +91,52 @@ fn within_fails_out_of_range() {
     assert_eq!(
         within(-1, 0, 10),
         Verdict::Fail(format!("-1 not in [0, 10]"))
+    );
+}
+
+// --- Phase 2: cross-verification sampler ---
+
+/// Briev-computed equality agrees for equal/unequal pairs.
+#[test]
+fn eq_is_briev_computed() {
+    assert!(eq(3, 3));
+    assert!(eq(-7, -7));
+    assert!(!eq(1, 2));
+    assert!(!eq(0, 1));
+}
+
+/// Original and shadow that agree over every sample pass.
+#[test]
+fn verify_passes_when_shadow_agrees() {
+    assert_eq!(
+        verify(|x| x * 2, |x| x * 2, 20, |i| i as i64),
+        Verdict::Pass
+    );
+}
+
+/// A boundary case: agreement at zero samples trivially passes.
+#[test]
+fn verify_passes_with_zero_samples() {
+    assert_eq!(verify(|x| x, |x| x + 999, 0, |_| 0), Verdict::Pass);
+}
+
+/// The first divergence is caught and named with input/expected/actual.
+#[test]
+fn verify_catches_first_divergence() {
+    // shadow adds 1; original adds 0 -> diverges at sample 0 (input 0).
+    assert_eq!(
+        verify(|x| x, |x| x + 1, 5, |i| i as i64),
+        Verdict::Fail("sample 0 diverged on input 0: expected 1, got 0".into())
+    );
+}
+
+/// Divergence on a later sample is still caught at the first mismatch.
+#[test]
+fn verify_catches_divergence_on_later_sample() {
+    // both double up to input 9, but shadow switches to +1 at input >= 10.
+    let shadow = |x: i64| if x < 10 { x * 2 } else { x * 2 + 1 };
+    assert_eq!(
+        verify(|x| x * 2, shadow, 20, |i| i as i64),
+        Verdict::Fail("sample 10 diverged on input 10: expected 21, got 20".into())
     );
 }

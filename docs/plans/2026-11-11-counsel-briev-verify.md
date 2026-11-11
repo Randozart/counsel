@@ -1,7 +1,7 @@
 # Counsel — Active Plan (Phases 0–4)
 
 **Date:** 2026-11-11
-**Status:** Phase 0 complete (scaffold spike) — `cargo test` green, contracts proved, praetor clean, committed. Next: Phase 1.
+**Status:** Phase 1 (A1 reliable) and Phase 2 (sampler) complete, committed. Next: Phase 3 (A2).
 **Feasibility/decision source:** `../BRIEV-RUST-VERIFY-PLAN.md`
 
 ## Purpose
@@ -89,11 +89,19 @@ checked in.
 
 **Status: implemented; verification + commit pending.**
 
+**Status: DONE (committed `34a198c`).** `cargo test` 7/7 + 2 doctests green;
+`cargo build` clean; praetor PASS on src/tests.
+
 ## Phase 2 — Cross-verification sampler
 
 - Port the `:=`/`cross_verify_samples` idea: `verify(original, shadow, n)`
   runs interleaved samples, compares (IO-equivalence), returns a verdict.
 - The "Briev does it" signature feature; echoes the shadow-benchmark model.
+
+**Status: DONE (2026-11-11).** `eq` primitive added to
+`counsel.bv` (pure Int ABI); Rust `verify(original, shadow, n, gen)` sampler
+uses `bindings::eq` for each pair; uses a generator `gen(i)` per sample.
+`cargo test` 12/12 + 3 doctests; `cargo build` clean; praetor PASS.
 
 ## Phase 3 — Ambition A2 (pure-Briev predicate AST)
 
