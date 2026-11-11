@@ -26,4 +26,8 @@ extern "C" {
     pub fn add(a: i64, b: i64) -> i64;
     /// Briev export `within`: 1 if `x` in inclusive [lo, hi], else 0.
     pub fn within(x: i64, lo: i64, hi: i64) -> i64;
+    /// Briev export `is_positive`: 1 if `x > 0`, else 0.
+    pub fn is_positive(x: i64) -> i64;
+    /// Briev export `is_nonneg`: 1 if `x >= 0`, else 0.
+    pub fn is_nonneg(x: i64) -> i64;
 }

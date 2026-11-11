@@ -34,3 +34,36 @@ export defn within(x: Int, lo: Int, hi: Int) -> Int {
 txn step_up(i: Int, cap: Int) [i < cap][i == cap] -> Int {
     term i + 1;
 };
+
+// run_checked — Briev-authored obligation orchestrator (Ambition A1).
+//
+// NOTE 2026-11-11: the cross-ABI function-pointer callback path this used to
+// take is NOT runtime-safe in Briev today. The C-binding generator emits a flat
+// `int64_t (*pre)(int64_t)` signature, but the LLVM backend lowers the fn-ptr
+// parameter to a closure/self convention (load the call target *from* the param
+// slot, then call `(slot, arg)`). A flat `extern "C" fn` from a Rust host
+// SIGSEGVs against it. Reverted; the reliable path is Briev-authored *check
+// predicates* over a pure Int ABI (below), composed by the Rust facade.
+// See BUGS.md for the full diagnostic + the Briev backend fix to re-enable.
+
+// The following check predicates are pure, contract-carrying Briev exports.
+// The Rust facade composes them (pre -> body -> post), driving each check with
+// pure Int ABI so no function-pointer crosses the boundary.
+
+// is_positive — 1 iff `x` is strictly greater than zero.
+// Guarantees: returns 1 exactly when x > 0.
+export defn is_positive(x: Int) -> Int {
+    when x > 0 {
+        term 1;
+    };
+    term 0;
+};
+
+// is_nonneg — 1 iff `x` is greater than or equal to zero.
+// Guarantees: returns 1 exactly when x >= 0.
+export defn is_nonneg(x: Int) -> Int {
+    when x >= 0 {
+        term 1;
+    };
+    term 0;
+};

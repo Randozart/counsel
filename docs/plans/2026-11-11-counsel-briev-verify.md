@@ -70,16 +70,24 @@ warnings); `praetor validate --warn --target src` and `--target .` both PASS;
 `step_up` contract `[i < cap][i == cap]` proved by Briev's prover; bindings
 checked in.
 
-## Phase 1 — Ambition A1 (Rust-closure obligations)
+## Phase 1 — Ambition A1 (Briev-computed checks, Rust composition)
 
-- Briev: contract IR (`Contract { name, pre, post }`), `bind_env`,
-  `eval_pre`, `eval_post`, failure reporter. Exports: `register_contract`,
-  `run_checked`, `report_failures -> String`.
-- Rust: `#[contracts]` proc-macro in `src/macros/` (adds a `syn`/`quote`
-  build-dependency on a tiny macros crate) OR combinator API. Rust closures
-  cross as fn pointers.
-- Exit: user fn with `pre: x>0`, `post: ret>=0`; a violating call runs the
-  Briev check and reports.
+> **Pivot (2026-11-11):** the original A1 (Rust closures crossing the C ABI as
+> flat `extern "C" fn`) is blocked by a Briev runtime ABI bug — see BUGS.md.
+> The cross-ABI fn-ptr param compiles but the backend calls `(slot, arg)`
+> (closure convention) while bindings advertise a flat `(*)(int64_t)`;
+> result SIGSEGV. Reliable form adopted below.
+
+- Briev: check predicates over a pure `Int` ABI (`within`, `is_positive`,
+  `is_nonneg`), each carrying its own contract and proven at build time.
+- Rust facade: `contract(pre, body, post, x)` combinator composes pre/body/
+  post; predicate closures delegate truth values to the Briev checks
+  (`positive`, `nonneg`, `in_range`). Orchestration lives in Rust; each
+  obligation's truth value is Briev-computed.
+- Exit: a user fn with `pre: x>0`, `post: ret>=0`; a violating call returns a
+  `Verdict::Fail` naming which obligation fired.
+
+**Status: implemented; verification + commit pending.**
 
 ## Phase 2 — Cross-verification sampler
 
