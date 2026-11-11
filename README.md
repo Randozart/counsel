@@ -89,7 +89,7 @@ prover output).
 
 Background: [`docs/plans/2026-11-11-counsel-briev-verify.md`](docs/plans/2026-11-11-counsel-briev-verify.md)
 and the feasibility study + decision record in
-[`BRIEV-RUST-VERIFY-PLAN.md`](../BRIEV-RUST-VERIFY-PLAN.md).
+[`docs/BRIEV-RUST-VERIFY-PLAN.md`](docs/BRIEV-RUST-VERIFY-PLAN.md).
 
 - **Phase 0** — scaffold spike: build path proven end-to-end. ✅
 - **Phase 1 (A1)** — Briev-computed check predicates + Rust `contract` combinator. ✅

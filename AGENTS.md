@@ -108,7 +108,7 @@ Patches are unacceptable. No "go fast and break things."
 
 | Resource | Location |
 |----------|----------|
-| Feasibility study + decision record | `../BRIEV-RUST-VERIFY-PLAN.md` |
+| Feasibility study + decision record | `docs/BRIEV-RUST-VERIFY-PLAN.md` |
 | Active plan (phases 0–4) | `docs/plans/2026-11-11-counsel-briev-verify.md` |
 | Regex/stdlib decisions | Briev: `docs/architecture/` in `briev-lang` |
 | Rust host GLUE reference | `briev-lang/examples/glue-host/rust-host/` |
