@@ -5,3 +5,5 @@ Cargo.lock
 # Editor/OS noise
 *.swp
 .DS_Store
+# Vendored compiler checkout (CI, or a local build of briev-lang)
+.briev-lang/

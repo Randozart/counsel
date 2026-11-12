@@ -24,4 +24,6 @@ categories = ["development-tools::testing", "compilers"]
 # `brievc --verify-bodies` (landed in briev-lang c0ce60dc).
 [workspace]
 members = ["counsel-static", "counsel-macros"]
+# CI checks out the compiler here (and so may a developer); it is not a member.
+exclude = [".briev-lang"]
 resolver = "2"
