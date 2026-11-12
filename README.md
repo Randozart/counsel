@@ -64,8 +64,21 @@ Three crates, three jobs:
 | `counsel` | you want the Briev-authored runtime predicates linked in | **yes, at build time** |
 
 `counsel-static` finds the compiler via `BRIEVC`, then `brievc` on `PATH`, then a
-sibling `briev-lang` checkout. A prebuilt Linux binary is attached to each
-tagged GitHub release; otherwise build it from the compiler repository:
+sibling `briev-lang` checkout. Each tagged release attaches a prebuilt Linux
+tarball that bundles the compiler **and its resource tree** (`lib/`, `config/`,
+`glue/`, `std/`, `spec/`, `plugins/` — the prelude lives in `plugins/parsed/`,
+so a bare binary is not enough):
+
+```bash
+curl -L -o brievc.tar.gz \
+  https://github.com/Randozart/counsel/releases/latest/download/brievc-linux-x86_64.tar.gz
+tar -xzf brievc.tar.gz
+export BRIEVC=$PWD/brievc-linux-x86_64/bin/brievc
+```
+
+The kept layout is `<prefix>/bin/brievc` + `<prefix>/share/briev/`, which the
+compiler resolves from its own executable, so it works from any working
+directory. On other platforms, build it from the compiler repository:
 
 ```bash
 git clone https://github.com/Randozart/briev-lang
@@ -74,7 +87,8 @@ export BRIEVC=$PWD/briev-lang/target/release/brievc
 ```
 
 `counsel` (the runtime half) invokes `brievc` from its build script, so it cannot
-be built without one — that is the remaining packaging gap.
+be built without one — that is the remaining packaging gap, and the tarball
+above is the shortest path to closing it.
 
 ## Quick start
 

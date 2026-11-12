@@ -42,24 +42,61 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p dist
-          cp .briev-lang/target/release/brievc dist/brievc-linux-x86_64
-          strip dist/brievc-linux-x86_64 || true
-          # Fail the release if the binary cannot even describe itself.
-          dist/brievc-linux-x86_64 freshness || true
+          set -euo pipefail
+          # The compiler is not self-contained: it reads its resource tree from
+          # <exe>/../share/briev (resource_root step 2). A bare binary is
+          # therefore broken -- it loses the prelude and silently degrades the
+          # type system. Ship bin/ + share/briev/ together.
+          prefix="dist/brievc-linux-x86_64"
+          mkdir -p "$prefix/bin" "$prefix/share/briev"
+          cp .briev-lang/target/release/brievc "$prefix/bin/brievc"
+          strip "$prefix/bin/brievc" || true
+          for d in lib config glue std spec plugins; do
+            cp -a ".briev-lang/$d" "$prefix/share/briev/$d"
+          done
+          tar -C dist -czf dist/brievc-linux-x86_64.tar.gz brievc-linux-x86_64
+
+      # The gate that would have caught the original defect: extract the
+      # artifact somewhere unrelated and compile from that directory. If
+      # resource resolution regresses, this fails instead of shipping a
+      # compiler that types Int as Float.
+      - name: Verify the artifact is relocatable
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          tar -C "$work" -xzf dist/brievc-linux-x86_64.tar.gz
+          prefix="$work/brievc-linux-x86_64"
+          "$prefix/bin/brievc" freshness
+          mkdir -p "$work/probe" "$work/probe/out"
+          cd "$work/probe"
+          printf 'defn demo(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; };\n' > demo.bv
+          "$prefix/bin/brievc" build demo.bv --library --out out
+          test -n "$(ls out)"
+          # No ./plugins and no BRIEV_HOME: the prelude must come from the
+          # binary's own share/briev tree.
+          ls "$prefix/share/briev"
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/brievc-linux-x86_64
+          files: dist/brievc-linux-x86_64.tar.gz
           body: |
-            Prebuilt `brievc` (Linux x86_64) for this tag.
+            Prebuilt `brievc` (Linux x86_64) for this tag, with its resource
+            tree — the compiler cannot run without `lib/`, `config/`, `glue/`,
+            `std/`, `spec/` and `plugins/` (the prelude lives in
+            `plugins/parsed/`).
 
             ```bash
-            curl -L -o brievc \
-              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/brievc-linux-x86_64
-            chmod +x brievc
-            export BRIEVC=$PWD/brievc
+            curl -L -o brievc.tar.gz \
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/brievc-linux-x86_64.tar.gz
+            tar -xzf brievc.tar.gz
+            export BRIEVC=$PWD/brievc-linux-x86_64/bin/brievc
+            $BRIEVC freshness
             ```
+
+            The kept layout is `<prefix>/bin/brievc` + `<prefix>/share/briev/`,
+            which the compiler resolves relative to its own executable, so it
+            works from any working directory. Set `BRIEV_HOME` only if you move
+            the tree somewhere unusual.
 
             Other platforms: build from `Randozart/briev-lang` with
             `cargo build --release --bin brievc`.
