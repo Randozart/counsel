@@ -96,13 +96,6 @@ fn translate_fn(
 ) -> Result<TranslatedFn, Error> {
     let name = item_fn.sig.ident.to_string();
     let (params, facts) = translate_params(&name, &item_fn.sig)?;
-    // P4 step (b): the invariant turns the loop into a straight-line
-    // preservation obligation. Briev evaluates `[pre]` in the entry state and
-    // `[post]` in the FINAL state, so `[I && i < hi][I]` is preservation itself —
-    // no induction, no new prover machinery.
-    if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
-        return translate_preservation(&name, &params, &invariant, item_fn);
-    }
     let post = post.unwrap_or_else(|| "true".to_string());
     // Each narrower or unsigned parameter contributes a domain fact. Everything
     // crosses into Briev as one `Int`, so without these the prover would happily
@@ -119,6 +112,13 @@ fn translate_fn(
         pre_parts.extend(facts);
         pre_parts.join(" && ")
     };
+    // P4 step (b): the invariant turns the loop into a straight-line
+    // preservation obligation. Briev evaluates `[pre]` in the entry state and
+    // `[post]` in the FINAL state, so `[I && i < hi][I]` is preservation itself —
+    // no induction, no new prover machinery.
+    if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
+        return translate_preservation(&name, &params, &pre, &invariant, item_fn);
+    }
     let body = translate_block(&item_fn.block.stmts)?;
     if body.trim().is_empty() {
         return Err(Error::Unsupported(format!(
@@ -1350,7 +1350,7 @@ mod invariant_tests {
         assert!(
             out[0]
                 .briev
-                .contains("[acc >= 0 && i >= (0) && i < (n)][acc >= 0]"),
+                .contains("[acc >= 0 && i >= 0 && i < n][acc >= 0]"),
             "expected the preservation contract, got: {}",
             out[0].briev
         );
@@ -1377,6 +1377,7 @@ mod invariant_tests {
 fn translate_preservation(
     name: &str,
     params: &str,
+    pre: &str,
     invariant: &str,
     item_fn: &syn::ItemFn,
 ) -> Result<TranslatedFn, Error> {
@@ -1425,8 +1426,18 @@ fn translate_preservation(
     }
     parts.push(format!("{var}: Int"));
     let body_text = translate_block(body)?;
+    // The function's precondition holds at loop entry, so it belongs in the
+    // antecedent: a bound like `n <= 1000` is what makes the arithmetic
+    // wraparound-free, and without it nothing bounded can be proved.
+    // No parentheses anywhere: `encodable` rejects `Expr::Paren`, which would
+    // silently skip the solver.
+    let antecedent = if pre == "true" {
+        format!("{invariant} && {var} >= {lower} && {var} < {bound}")
+    } else {
+        format!("{pre} && {invariant} && {var} >= {lower} && {var} < {bound}")
+    };
     let briev = format!(
-        "defn {name}_preserve({}) [{invariant} && {var} >= ({lower}) && {var} < ({bound})][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n",
+        "defn {name}_preserve({}) [{antecedent}][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n",
         parts.join(", ")
     );
     Ok(TranslatedFn {
