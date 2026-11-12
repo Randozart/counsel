@@ -130,3 +130,33 @@ tarball would ship a binary that still mis-types.
 
 Until then the release asset carries a caveat and the README says to build the
 compiler from source.
+
+### Update — further isolation (same day)
+
+The first table suggested a single relocation defect. Supplying more of the tree
+shows it is a *set* of independent path assumptions: each fix exposes the next.
+
+| Package contents | Failure |
+|---|---|
+| `brievc` alone | `Cannot find module 'std/cli.bv'` (searches `/lib`, `/imports`, `/std`) |
+| + `lib/` `config/` `glue/` | `type mismatch: expected Float for term value vs declared return type, found Int` |
+| + `std/` `imports/` `spec/` … | `cannot read 'std/c/coll_arena.c'` (a C source read from a relative path) |
+
+Two useful negatives: a **byte-identical** copy of `lib/` (0 symlinks, same file
+list, same size) reproduces the typing failure, so it is not a copy artifact; and
+a fully self-contained package with the source *inside* it still fails, so it is
+not the source location either.
+
+One apparent success earlier (`--stdlib-path` + repo tree) turned out to be
+confounded: `/tmp` still held symlinks from an earlier experiment, so the
+compiler was reading the real repo tree rather than the copy. With those removed
+the failure returns — worth recording, because it is exactly the kind of
+environment leak that makes a diagnosis look solved.
+
+**Conclusion, sharper.** `brievc` resolves modules, type metadata and even C
+sources from several CWD- and source-relative roots plus build-time-absolute
+fallbacks. No packaging arrangement can satisfy that reliably. The fix remains
+the one proposed above: a single resource root, resolved from
+`current_exe()` with a `BRIEV_ROOT` override, plus an acceptance test that runs
+the shipped binary from a temp directory and compares verdicts with the in-tree
+run.
