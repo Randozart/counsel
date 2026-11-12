@@ -179,7 +179,7 @@ Accepted: `i64` parameters and return, integer literals, identifiers, unary
 
 Rejected with `Error::Unsupported` (never approximated): calls, method calls,
 field access, indexing, slicing, ranges, loops, `match`, pattern `let`s,
-`self` methods, non-`i64` types, generics with arguments, `async`.
+`self` methods, non-integer types, generics with arguments, `async`, and calls to callees that are not pure and precondition-free.
 
 Rationale: a wrong translation would be a wrong proof.
 
