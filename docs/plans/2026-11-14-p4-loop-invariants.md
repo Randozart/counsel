@@ -78,3 +78,32 @@ For a `for i in lo..hi { body }` with invariant `I`:
 3. Re-run the lab: `optimal_step_for_cycle_length` (dynamic bounds) is the
    existing reproduction.
 4. Update the ledger's tally and drop class (b) "dynamic loop bounds".
+
+## Outcome — VC2 works (2026-11-14)
+
+`count_preserve` proves end to end: a `for i in 0..n` loop with
+`#[invariant(acc == i && i <= n)]` and `#[pre(n >= 0 && n <= 1000)]` discharges.
+
+The route there corrected three of my own mistakes, all worth keeping:
+
+1. **The antecedent must carry the function precondition.** A bound like
+   `n <= 1000` is what makes the arithmetic wraparound-free; without it nothing
+   bounded can prove.
+2. **Never emit parentheses.** `encodable` rejects `Expr::Paren`, so a
+   parenthesised conjunct does not fail loudly — it silently skips the solver.
+3. **A self-referential assignment must not double-expand.** `acc = acc + 1`
+   became `acc + 2` in the goal until the cycle guard was applied *before*
+   descending into the value (briev-lang `95dbe54c`).
+
+**No SSA renaming is needed.** I had concluded it was, and was wrong: entry-state
+facts and a structurally substituted goal speak the same symbols, so the VC is
+consistent as built. Reading the emitted query (`BRIEV_DIAG_VC`) showed the goal
+was `acc+2`, which settled it in one step.
+
+### Rule for users, now that this is real
+
+`Int` is a **wrapping** 64-bit bitvector. An invariant must therefore
+(a) bound the values it reasons about, and (b) survive the growth step. A bare
+`acc >= 0` is unprovable (it can wrap) and `acc <= 1000` is not preserved by
+`acc = acc + i` (`i` is unbounded). `acc == i && i <= n` with `n` bounded satisfies
+both, which is why it proves.
