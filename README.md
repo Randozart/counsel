@@ -61,24 +61,31 @@ Three crates, three jobs:
 |---|---|---|
 | `counsel-macros` | you want `#[pre]`/`#[post]`/`#[case]` to compile — proc-macro no-ops, so rustc accepts them | no |
 | `counsel-static` | you want contracts proved by Briev's prover | **yes, at check time** |
-| `counsel` | you want the Briev-authored runtime predicates linked in | **yes, at build time** |
+| `counsel` | you want the Briev-authored runtime predicates linked in | fetched automatically on linux x86_64 |
 
-`counsel-static` finds the compiler via `BRIEVC`, then `brievc` on `PATH`, then a
-sibling `briev-lang` checkout. Each tagged release attaches a prebuilt Linux
-tarball that bundles the compiler **and its resource tree** (`lib/`, `config/`,
-`glue/`, `std/`, `spec/`, `plugins/` — the prelude lives in `plugins/parsed/`,
-so a bare binary is not enough):
+`counsel` (the runtime half) needs the compiler **at build time**, and now
+fetches it for you. `build.rs` resolves one in this order:
+
+1. `COUNSEL_BRIEVC` / `BRIEVC` — an explicit binary (dev loop, CI, air-gapped)
+2. the pinned release cache — extracted once, then reused offline
+3. `brievc` on `PATH` — a locally installed compiler
+4. the pinned GitHub release — downloaded, **sha256-verified**, extracted
 
 ```bash
-curl -L -o brievc.tar.gz \
-  https://github.com/Randozart/counsel/releases/latest/download/brievc-linux-x86_64.tar.gz
-tar -xzf brievc.tar.gz
-export BRIEVC=$PWD/brievc-linux-x86_64/bin/brievc
+cargo test          # first build fetches brievc into ~/.cache/counsel (~10 MB)
 ```
 
-The kept layout is `<prefix>/bin/brievc` + `<prefix>/share/briev/`, which the
-compiler resolves from its own executable, so it works from any working
-directory. On other platforms, build it from the compiler repository:
+The cache lives at `$XDG_CACHE_HOME/counsel` (or `~/.cache/counsel`); override it
+with `COUNSEL_CACHE_DIR`, or set `COUNSEL_NO_DOWNLOAD=1` to forbid fetching
+entirely (useful in sandboxes — you then must supply option 1 or 3).
+
+The bundle carries the compiler **and its resource tree** (`lib/`, `config/`,
+`glue/`, `std/`, `spec/`, `plugins/` — the prelude lives in `plugins/parsed/`,
+so a bare binary is not enough). The kept layout is `<prefix>/bin/brievc` +
+`<prefix>/share/briev/`, which the compiler resolves from its own executable, so
+`BRIEV_HOME` is not needed.
+
+Only **linux x86_64** has a prebuilt artifact. Elsewhere, build it:
 
 ```bash
 git clone https://github.com/Randozart/briev-lang
@@ -86,21 +93,18 @@ cargo build --release --manifest-path briev-lang/Cargo.toml --bin brievc
 export BRIEVC=$PWD/briev-lang/target/release/brievc
 ```
 
-`counsel` (the runtime half) invokes `brievc` from its build script, so it cannot
-be built without one — that is the remaining packaging gap, and the tarball
-above is the shortest path to closing it.
+`counsel-static` applies the same order, plus a sibling `briev-lang` checkout.
 
 ## Quick start
 
 ```bash
-# Build linked library + machine tests
-BRIEVC=/path/to/brievc cargo test
+cargo test          # fetches brievc on first build (linux x86_64)
 ```
 
-or, if `brievc` is already on your PATH:
+Pin a specific compiler instead when you want one:
 
 ```bash
-cargo test
+BRIEVC=/path/to/brievc cargo test
 ```
 
 ## What Counsel gives you

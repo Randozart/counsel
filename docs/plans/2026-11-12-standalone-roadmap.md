@@ -1,9 +1,9 @@
 # Roadmap — Counsel as a standalone tool
 
 **Date:** 2026-11-12
-**Status:** items 1–3 done and C4 done. C1 (`2b361ed2`, `3c41fe6`), C6+C5
-(`860abe10`), T1 (`4574ca8`), T2+T3 (`088e631`), C4 (`984ca4ac`). Remaining:
-C2 packaging and C3 inter-procedural facts.
+**Status:** items 1–4 done, plus C4. C1 (`2b361ed2`, `3c41fe6`), C6+C5
+(`860abe10`), T1 (`4574ca8`), T2+T3 (`088e631`), C4 (`984ca4ac`), C2 (`build.rs`
+resolver). Remaining: C3 inter-procedural facts.
 **Basis:** `2026-11-12-standalone-assessment.md` (readiness + debt inventory).
 
 Order follows the assessment: trust and interface first, then adoption, then depth.
@@ -62,11 +62,25 @@ legacy and removable once a compiler with the flag is the floor.
 - **T2** directory/project scanning and `cargo counsel check`.
 - **T3** `--format json` for the CLI (consumes the same `Report`).
 
-## Item 4 — C2: packaging
+## Item 4 — C2: packaging ✅ done
 
 Publish `briev-compiler` (or ship prebuilt `brievc` binaries) so `cargo add
 counsel` works. Deliberately after the interface settles: the published shape
 should not change twice.
+
+**Shipped as the prebuilt-binary route.** `build.rs` resolves the compiler in
+order: `COUNSEL_BRIEVC`/`BRIEVC` → pinned release cache → `brievc` on `PATH` →
+download the pinned, sha256-verified release tarball. The bundle keeps
+`<prefix>/bin/brievc` + `<prefix>/share/briev/`, which the compiler resolves from
+its own executable, so no `BRIEV_HOME` plumbing is needed. Cache lives at
+`$XDG_CACHE_HOME/counsel` (override `COUNSEL_CACHE_DIR`); `COUNSEL_NO_DOWNLOAD=1`
+forbids fetching, and `DOCS_RS` skips the native half so docs build offline.
+Publishing `briev-compiler` to crates.io stays deliberately unclaimed (it would
+push an LLVM toolchain onto every consumer).
+
+Verified: fresh cache downloads + verifies + builds (3.9 s); warm cache builds
+with a dead proxy (3.2 s, no network); explicit `BRIEVC` unchanged (3.2 s); no
+compiler and no network yields one message naming all four options.
 
 ## Item 5 — C3 + C4: prover depth
 
