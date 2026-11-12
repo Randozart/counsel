@@ -160,3 +160,39 @@ the one proposed above: a single resource root, resolved from
 `current_exe()` with a `BRIEV_ROOT` override, plus an acceptance test that runs
 the shipped binary from a temp directory and compares verdicts with the in-tree
 run.
+
+### Handoff — what is established, and the one open question
+
+Established by experiment (all recorded above):
+
+1. The release **pipeline** works; the **artifact** does not.
+2. Relocation fails in a cascade — supplying more of the tree reveals the next
+   missing path — so it is a *set* of path assumptions, not one bug.
+3. The typing failure (`Int` → `Float`) is **independent of the stdlib root**:
+   a packaged layout with `--stdlib-path` pointing at its own `lib/`, run from a
+   foreign cwd, still fails. It is also not a copy artifact (byte-identical
+   `lib/`) and not the source location (source inside the package fails too).
+
+**Not established: why `Int` degrades to `Float`.** Everything else is
+path-shaped; this one is not, so it needs instrumentation rather than more
+packaging guesses. The concrete next probe:
+
+- Locate the emitter of `expected Float for term value vs declared return type,
+  found Int` (the string is assembled with `format!`, so grep for `term value`
+  finds only its doc-comment sibling in `import_resolver.rs:298`; search the
+  typechecker for `expected {}` + `term`).
+- Log the type that `term` is bound to at contract elaboration
+  (`typechecker/mod.rs`, where `term` is inserted with
+  `output_type_to_type(&OutputType::Single(ty))`), and whether the fundamentals
+  module (`lib/std/types/bootstrap.bv`) was spliced in that run. `--emit-beast
+  parse.after` should show whether the prelude actually landed.
+
+Once that is known, the fix is the one proposed above (single resource root from
+`current_exe`, `BRIEV_ROOT` override) **plus** whatever the instrumentation
+shows, and the acceptance test is the part that must not be skipped:
+
+> copy `brievc` + its resource tree to a temp dir, compile a contract from an
+> unrelated cwd, and assert the verdicts equal the in-tree run.
+
+That test would have caught all three cascade failures *and* the typing
+degradation; without it, "packaging" stays a hope rather than a check.
