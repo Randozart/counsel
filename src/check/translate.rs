@@ -1155,7 +1155,11 @@ fn translate_for(for_loop: &syn::ExprForLoop, out: &mut Vec<String>) -> Result<(
         range.end.as_deref().and_then(literal_int),
     ) else {
         return Err(Error::Unsupported(
-            "`for` loop bounds must be integer literals: unrolling is the only sound model"
+            "`for` loop bounds must be integer literals: a dynamic bound (e.g. `0..n`) \
+             needs a loop invariant, which Counsel does not support yet. Unrolling a \
+             variable trip count would be unsound, so it is refused rather than \
+             approximated. Extract the loop into a constant-bound form, or verify its \
+             caller instead"
                 .to_string(),
         ));
     };
