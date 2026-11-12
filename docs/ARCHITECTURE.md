@@ -247,7 +247,7 @@ counts as a pass.
 | Bodies outside the subset are skipped, not guessed | Yes |
 | Runtime checks are cheap, pure `Int` calls into native code | Yes |
 | Static proof needs no runtime execution | Yes |
-| Full Rust support | **No** — `i64` subset only |
+| Full Rust support | **No** — integer subset only; any integer width (i8-i64, u8-u32, u64/usize/isize), and calls resolve when the callee is pure and precondition-free |
 | Deciding every true contract | **No** — bounds + Z3 when installed; parameter-dependent goals stay advisory |
 | Works without a Briev compiler | **No** — `brievc` required at check time |
 
