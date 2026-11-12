@@ -86,3 +86,16 @@ Do R1 **alone** as one commit. If the mechanical thread touches more than
 expected, we learn that before any behaviour rides on it — and the suite is the
 gate. Then R2/R3/R4 together, since a partial version either proves nothing
 (R2 without R3 is unsound) or blocks everything (R3 without R2).
+
+## Outcome (implemented, `7a11a17`)
+
+R1 was replaced by a smaller design that achieves the same thing: calls are
+resolved on the `syn` tree **before** translation (`build_summaries` + an inliner
+using `syn`'s `visit-mut`), so `translate_expr` stays a context-free pure printer
+and **no signatures changed**. The seven-signature `Ctx` thread the estimate
+assumed was unnecessary.
+
+R2-R4 held unchanged: summary = the callee's returned `syn::Expr`; only callees
+with no explicit precondition are summarised; a cycle earns no summary and its
+residual call is rejected. `gcd` therefore still blocks (one level unrolled, then
+refused — no false proof), and slice 3 proved a real caller end-to-end.

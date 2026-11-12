@@ -181,7 +181,7 @@ Result — no compiler run, rejected during translation:
 ```rust
 Err(Error::Unsupported(
     "unsupported expression (pure-integer subset): … — Counsel verifies a \
-     pure-integer subset: `i64` parameters and return, integer arithmetic, \
+     pure-integer subset: integer parameters and return (i8-i64, u8-u32, u64/usize/isize with their range facts), integer arithmetic, \
      comparisons, `let`, `if`/`else`, `return`, and a trailing expression"
 ))
 ```
