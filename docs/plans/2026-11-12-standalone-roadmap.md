@@ -221,3 +221,38 @@ built from a root that is *not* the resolved stdlib. Next probe: find where that
 path is constructed (grep for `std/c` rather than the filename — the earlier
 `coll_arena.c` grep in `src/` found nothing, so the path is assembled) and make
 it hang off the same single root.
+
+### Resolution — it was `plugins/`, and the typing really was path-dependent
+
+Both earlier hypotheses were wrong in an instructive way. The failure was not a
+type-mapping bug (`parser/types.rs` maps `Int` correctly) and not a missing
+`std/` root. It was `plugins/`:
+
+`discover_system_plugins` checked `./plugins`, fell back to
+`<resource_root>/plugins`, and **silently continued** when neither existed.
+`plugins/parsed/prelude-native.bv` is the prelude, so an incomplete resource
+tree removed the fundamentals and the checker settled on `Float` for an `Int`
+contract. Because the working directory came first, the same tree typed
+differently depending on where you stood — the repo supplied `./plugins`, a
+package could not.
+
+My "independent of the stdlib root" note was true and misleading: independent of
+the *stdlib* root, entirely dependent on the *plugin* root. The lesson worth
+keeping is the diagnostic one: `BRIEV_HOME=<original repo>` making the package
+compile from its own cwd narrowed the variable to *root resolution*, and a
+bisect over the repo's 612 root entries then named `plugins/` ("needed alone:
+YES"). The first bisect had inverted logic and converged on a random `.bc` with
+"needed alone: no" — that contradiction is what exposed the bisect, not the
+compiler.
+
+Shipped:
+
+| Repo | Commit | Change |
+|---|---|---|
+| briev-lang | `2172bbc6` | resource root wins; `./plugins` dev-only fallback; missing/empty plugin dir is a hard error; `Result` propagated through `build_plugin_manager` |
+| briev-lang | `22347f76` | `tests/relocatability.rs` — compiles from an unrelated cwd; a missing prelude fails loudly and never as a type mismatch |
+| counsel | `6530736` | tarball `<prefix>/bin/brievc` + `<prefix>/share/briev/{lib,config,glue,std,spec,plugins}`, a relocatability gate before publishing, README install rewritten |
+
+`v0.1.0` was re-cut so the published artifact carries the fix. C2c is closed;
+what remains on the roadmap is prover depth (C3 call-containing bodies, C4 Z3
+wiring), not packaging.
