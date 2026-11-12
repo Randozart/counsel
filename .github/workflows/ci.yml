@@ -74,11 +74,13 @@ jobs:
         run: |
           cargo build -p counsel-static --bin counsel-check
           ./target/debug/counsel-check counsel-static/tests/fixtures/contracts.rs | tee cli.out
-          # Every verdict shape the crate can produce, asserted explicitly:
-          grep -q "case only" cli.out    # a #[case] proves one input only
-          grep -q "advisory" cli.out     # a range-bounded goal stays undecided
-          grep -q "sign .*proven" cli.out # a bound alone can decide a goal
-          # A point-pinned precondition must decide arithmetic with no case:
-          # this is the check that the compiler built above carries the
-          # point-bound reasoning (briev-lang a2bbaba4).
-          grep -q "pinned .*proven" cli.out
+          # Assertions are ANCHORED on purpose. A loose match like
+          # "pinned .*proven" also matches "pinned ... unproven (advisory)", so
+          # it would pass on exactly the regression it exists to catch.
+          grep -qE '^double +unproven \(advisory\)$' cli.out
+          grep -qE '^double \(case 0\) +proven \(case only\)$' cli.out
+          grep -qE '^sign +proven$' cli.out
+          # A point-pinned precondition decides arithmetic with no case, which
+          # is the check that the compiler built above carries the point-bound
+          # reasoning (briev-lang a2bbaba4).
+          grep -qE '^pinned +proven$' cli.out
