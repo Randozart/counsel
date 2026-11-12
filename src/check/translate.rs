@@ -1463,3 +1463,4 @@ fn assigned_names(stmts: &[syn::Stmt]) -> Vec<String> {
     }
     out
 }
+
