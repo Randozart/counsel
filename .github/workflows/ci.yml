@@ -1,0 +1,80 @@
+# CI — prove the static half against the real prover.
+#
+# The crate's value is that contracts are discharged by Briev's own body prover,
+# so this workflow builds `brievc` from source instead of letting the
+# prover-backed tests self-skip (they return early when no compiler is found).
+# A pipeline that skipped them would show green while proving nothing, which is
+# exactly what this project refuses to do.
+#
+# Cost: one release build of the compiler per run, cached on its Cargo.lock.
+# `brievc` emits LLVM IR text and shells out to clang/llc, so it has no
+# llvm-sys build dependency — the build is plain Rust plus the toolchain below.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # `counsel`'s build script and every discharge step read this.
+  BRIEVC: ${{ github.workspace }}/.briev-lang/target/release/brievc
+
+jobs:
+  test:
+    name: test + prove
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `brievc` shells out to clang and llc when compiling a .bv to native
+      # code; build.rs also probes for a C compiler.
+      - name: Compiler toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm
+
+      # The prover lives in the compiler repository, so CI checks it out. This
+      # tracks the default branch deliberately: the surface Counsel depends on
+      # (`--verify-bodies`, flat C callbacks, forwarding a callback parameter)
+      # landed there and a silent divergence should fail loudly.
+      - name: Fetch briev-lang
+        uses: actions/checkout@v4
+        with:
+          repository: Randozart/briev-lang
+          path: .briev-lang
+
+      - name: Cache briev-lang build
+        uses: actions/cache@v4
+        with:
+          path: .briev-lang/target
+          key: briev-${{ runner.os }}-${{ hashFiles('.briev-lang/Cargo.lock') }}
+          restore-keys: briev-${{ runner.os }}-
+
+      - name: Build brievc
+        run: cargo build --release --manifest-path .briev-lang/Cargo.toml --bin brievc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}
+
+      - name: Workspace tests
+        run: cargo test --workspace
+
+      - name: CLI smoke test
+        run: |
+          cargo build -p counsel-static --bin counsel-check
+          # The fixture has one advisory goal and one case: exit 0, and the
+          # case line must be labelled as case-only.
+          ./target/debug/counsel-check counsel-static/tests/fixtures/contracts.rs | tee cli.out
+          grep -q "case only" cli.out
+          grep -q "advisory" cli.out
