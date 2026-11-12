@@ -84,3 +84,49 @@ should not change twice.
   commit — an outdated doc is a bug.
 - No item is "done" until it is verified against a **freshly built** `brievc`
   (`brievc freshness` must say `fresh`).
+
+---
+
+## C2b — the released `brievc` is not relocatable (finding, 2026-11-12)
+
+The v0.1.0 release pipeline works: tag → build → asset, 4m9s, verified. The
+**artifact it produces does not work anywhere but its build tree.**
+
+Evidence (same binary, same source file, only the location changes):
+
+| Layout | Result |
+|---|---|
+| binary in the compiler repo, cwd = that repo | exit 0, verdicts correct |
+| binary + `lib/` + `config/` copied to another dir | `type mismatch: expected Float for term value vs declared return type, found Int` |
+| same, with `BRIEV_CONFIG_DIR` pointing at the copied config | same error |
+| cwd = the copied package dir (binary beside `lib/`) | same error |
+| cwd with a `lib` symlink beside the binary | same error |
+
+Two distinct defects, in order of what they hide:
+
+1. **Absolute build-time paths.** The published binary looks for
+   `/lib/std/cli.bv`, `/imports/…`, `/std/…` — i.e. roots that only make sense
+   on the machine that built it. `--stdlib-path` overrides the module root, but
+   that is a flag users must discover and a path they must supply.
+2. **Relocation changes typing.** With `lib/` adjacent (which the resolver does
+   consult, `src/import_resolver.rs:423`) the module error disappears, yet
+   `Int` degrades to `Float` in the contract: the prelude's type metadata is not
+   being loaded from the relocated root. So the compiler depends on its source
+   tree for more than module resolution.
+
+**Conclusion.** This is not a workflow bug to patch — it is a compiler property:
+`brievc` assumes it lives in its build tree. Patching the workflow to ship a
+tarball would ship a binary that still mis-types.
+
+**Proposed fix (compiler).**
+
+- Resolve **one** resource root from `std::env::current_exe()` and use it for
+  `lib/`, `config/` and `glue/` — not a mix of cwd-relative, source-relative and
+  build-time-absolute paths.
+- Allow an override (`BRIEV_ROOT`) for unusual layouts.
+- Add an acceptance test that copies `brievc` + the resource tree to a temp dir,
+  compiles a contract from an unrelated cwd, and asserts the same verdicts as
+  in-tree — this test would have caught both defects.
+
+Until then the release asset carries a caveat and the README says to build the
+compiler from source.
