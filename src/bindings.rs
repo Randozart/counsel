@@ -46,6 +46,14 @@ extern "C" {
         post: extern "C" fn(i64, i64) -> i64,
         x: i64,
     ) -> i64;
+    /// Briev export `verify_samples`: the cross-verification sampler loop.
+    /// Returns -1 when every sample agrees, else the first divergent index.
+    /// Sample inputs are the sample index itself (0..n-1).
+    pub fn verify_samples(
+        original: extern "C" fn(i64) -> i64,
+        shadow: extern "C" fn(i64) -> i64,
+        n: i64,
+    ) -> i64;
     /// Briev export `eval_pred`: predicate-as-data dispatch over `x`.
     /// op: 0=GT,1=GE,2=LT,3=LE,4=IN; returns 1 when the inequality holds.
     pub fn eval_pred(op: i64, a: i64, b: i64, x: i64) -> i64;

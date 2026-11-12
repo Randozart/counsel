@@ -137,3 +137,31 @@ export defn run_checked(pre: (Int) -> Int, f: (Int) -> Int, post: (Int, Int) -> 
     };
     term 0;
 };
+// verify_samples — cross-verification sampler loop, authored in Briev (A4).
+//
+// 2026-11-12: the sampling loop lives here rather than in Rust now that a
+// forwarded callback parameter compiles (briev-lang 0ea0fe6e). `original` is
+// the function under test, `shadow` the reference; sample inputs are the
+// sample index itself (0..n-1), so no generator callback crosses the ABI.
+//
+// Returns -1 when every sample agrees, else the first divergent index.
+// Guarantees: -1 iff original(i) == shadow(i) for every i in 0..n.
+export defn verify_samples(original: (Int) -> Int, shadow: (Int) -> Int, n: Int) -> Int {
+    term verify_at(original, shadow, n, 0);
+};
+
+// verify_at — one step of the sampler; recurses to the end or the first
+// divergence. The recursive call forwards two fn-typed parameters, which is
+// exactly the shape briev-lang 0ea0fe6e fixed.
+// Guarantees: -1 when samples i..n-1 all agree, else the first divergent index.
+defn verify_at(original: (Int) -> Int, shadow: (Int) -> Int, n: Int, i: Int) -> Int {
+    when i >= n {
+        term -1;
+    };
+    let expected: Int = shadow(i);
+    let actual: Int = original(i);
+    when actual != expected {
+        term i;
+    };
+    term verify_at(original, shadow, n, i + 1);
+};

@@ -165,6 +165,34 @@ pub fn run_checked(
     }
 }
 
+/// Cross-verifies `original` against a `shadow` reference over `n` samples,
+/// with the sampling loop authored in Briev (`bridge/counsel.bv`).
+///
+/// Sample inputs are the sample index itself (`0..n-1`), so no generator has
+/// to cross the ABI. Briev walks the samples, compares each pair and reports
+/// the first divergence; this wrapper only marshals the two callbacks and maps
+/// the result.
+///
+/// Returns [`Verdict::Pass`] when every sample agrees, otherwise
+/// [`Verdict::Fail`] naming the first divergent sample.
+pub fn verify_samples(
+    original: extern "C" fn(i64) -> i64,
+    shadow: extern "C" fn(i64) -> i64,
+    n: usize,
+) -> Verdict {
+    // Safety: the export is pure C ABI; both callbacks are `extern "C"`.
+    // A sample count beyond i64 range is clamped rather than truncated.
+    let samples = i64::try_from(n).unwrap_or(i64::MAX);
+    let code = unsafe { bindings::verify_samples(original, shadow, samples) };
+    if code < 0 {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(format!(
+            "sample {code} diverged: original({code}) != shadow({code})"
+        ))
+    }
+}
+
 /// A `<,>,<=,>=,in-range` predicate transported to Briev as data (Ambition A2).
 ///
 /// The predicate is *not* a Rust closure: it is a tagged variant, serialised to

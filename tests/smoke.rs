@@ -8,7 +8,7 @@
 
 use counsel::{
     add, check_op, contract, eq, in_range, nonneg, positive, run_checked, satisfies, verify,
-    within, Op, Verdict,
+    verify_samples, within, Op, Verdict,
 };
 
 /// The Briev-authored `add` export computes a sum through the C ABI.
@@ -237,4 +237,41 @@ fn run_checked_reports_failed_postcondition() {
         run_checked(positive_pre, negate, positive_post, 7),
         Verdict::Fail("postcondition failed".into())
     );
+}
+
+// --- A4: the sampler loop is authored in Briev ---
+
+/// C-ABI function under test: doubles its input.
+extern "C" fn sampler_dbl(x: i64) -> i64 {
+    x * 2
+}
+
+/// C-ABI reference: matches `sampler_dbl` until input 10, then diverges.
+extern "C" fn sampler_off(x: i64) -> i64 {
+    if x >= 10 {
+        x * 2 + 1
+    } else {
+        x * 2
+    }
+}
+
+/// Agreeing callbacks pass; the walk and the comparisons happen in Briev.
+#[test]
+fn verify_samples_passes_when_callbacks_agree() {
+    assert_eq!(verify_samples(sampler_dbl, sampler_dbl, 20), Verdict::Pass);
+}
+
+/// The first divergence is reported with its sample index.
+#[test]
+fn verify_samples_reports_first_divergence() {
+    assert_eq!(
+        verify_samples(sampler_dbl, sampler_off, 20),
+        Verdict::Fail("sample 10 diverged: original(10) != shadow(10)".into())
+    );
+}
+
+/// Zero samples trivially agree.
+#[test]
+fn verify_samples_handles_zero_samples() {
+    assert_eq!(verify_samples(sampler_dbl, sampler_off, 0), Verdict::Pass);
 }
