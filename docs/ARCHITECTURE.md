@@ -137,7 +137,7 @@ the first divergence with input, expected and actual.
 check_source(&str)                     (or check_file(&Path))
   │
   ├─ syn::parse_file                     parse Rust
-  ├─ translate::translate_file           keep only fns with #[requires]/#[ensures]
+  ├─ translate::translate_file           keep only fns with #[pre]/#[post]
   │    └─ per fn: translate_params → translate_block → assemble defn text
   ├─ brievc::discharge                   run the Briev prover
   │    ├─ find_compiler()                $BRIEVC → PATH → sibling briev-lang builds
@@ -153,8 +153,8 @@ check_source(&str)                     (or check_file(&Path))
 
 | Rust | Briev |
 |---|---|
-| `#[requires(a >= 0)]` | `[a >= 0]` |
-| `#[ensures(term == a + a)]` | `[term == a + a]` |
+| `#[pre(a >= 0)]` | `[a >= 0]` |
+| `#[post(term == a + a)]` | `[term == a + a]` |
 | `fn double(a: i64) -> i64 { … }` | `defn double(a: Int) [..][..] -> Int { … };` |
 | `let m = n + 1;` | `let m: Int = n + 1;` |
 | `return e;` | `term e;` |
@@ -175,7 +175,7 @@ passed through unchanged.
 
 Accepted: `i64` parameters and return, integer literals, identifiers, unary
 `-`/`!`, arithmetic `+ - * / %`, comparisons, `&&`/`||`, `let`, `if`/`else`,
-`return`, a trailing expression, and `#[requires]`/`#[ensures]`.
+`return`, a trailing expression, and `#[pre]`/`#[post]`.
 
 Rejected with `Error::Unsupported` (never approximated): calls, method calls,
 field access, indexing, slicing, ranges, loops, `match`, pattern `let`s,

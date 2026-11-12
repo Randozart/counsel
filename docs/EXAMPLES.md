@@ -11,8 +11,8 @@ not paraphrased.
 Rust source (what you write):
 
 ```rust
-#[requires(a >= 0)]
-#[ensures(term == a + a)]
+#[pre(a >= 0)]
+#[post(term == a + a)]
 fn double(a: i64) -> i64 { a + a }
 ```
 
@@ -48,8 +48,8 @@ The classic case that used to slip through — a body contradicting its own
 postcondition.
 
 ```rust
-#[requires(a >= 0)]
-#[ensures(term == 0)]
+#[pre(a >= 0)]
+#[post(term == 0)]
 fn lies(a: i64) -> i64 { 5 }
 ```
 
@@ -88,7 +88,7 @@ arithmetically false for most inputs, but the prover has no numeric value to
 compare and no interval facts that would separate `a * 2` from `a * a`.
 
 ```rust
-#[ensures(term == a * a)]
+#[post(term == a * a)]
 fn scale(a: i64) -> i64 { a * 2 }
 ```
 
@@ -131,8 +131,8 @@ yet — reasoning is interval bounds plus structural equality.
 ## 4. Static proof: branches on both arms
 
 ```rust
-#[requires(a >= 0)]
-#[ensures(term >= 0)]
+#[pre(a >= 0)]
+#[post(term >= 0)]
 fn clamp(a: i64) -> i64 { if a > 5 { return a; } 0 }
 ```
 
@@ -154,7 +154,7 @@ An `if`/`else` whose arms both produce a value compiles the same way — the els
 body is emitted unguarded, because reaching it implies the guard failed:
 
 ```rust
-#[ensures(term >= 0)]
+#[post(term >= 0)]
 fn pick(a: i64) -> i64 { if a > 5 { a } else { 0 } }
 ```
 ```briev
@@ -172,7 +172,7 @@ defn pick(a: Int) [true][term >= 0] -> Int {
 ## 5. Static proof: a construct outside the subset
 
 ```rust
-#[ensures(term >= 0)]
+#[post(term >= 0)]
 fn f(a: i64) -> i64 { helper(a) }
 ```
 
@@ -197,8 +197,8 @@ about a function the prover cannot see.
 use counsel_static::{check_source, Outcome};
 
 let report = check_source(r#"
-    #[requires(a >= 0)]
-    #[ensures(term == a + a)]
+    #[pre(a >= 0)]
+    #[post(term == a + a)]
     fn double(a: i64) -> i64 { a + a }
 "#)?;
 
@@ -207,11 +207,11 @@ assert!(report.all_proven());
 # Ok::<(), counsel_static::Error>(())
 ```
 
-Functions without `#[requires]`/`#[ensures]` are ignored, so a file can mix
+Functions without `#[pre]`/`#[post]` are ignored, so a file can mix
 contracted and uncontracted code freely.
 
 **Integration note.** `counsel-static` reads source *text* and parses it with
-`syn`; it does not compile your crate, and `#[requires]`/`#[ensures]` are
+`syn`; it does not compile your crate, and `#[pre]`/`#[post]` are
 attributes this tool understands (there is no proc-macro yet). Call
 `check_source`/`check_file` from a test, a build step, or CI.
 

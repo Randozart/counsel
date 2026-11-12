@@ -6,8 +6,8 @@
 // subset, discharged through Briev's own body prover (`--verify-bodies`,
 // briev-lang c0ce60dc). Declare contracts with plain attributes:
 //
-//   #[requires(a >= 0)]
-//   #[ensures(term >= 0)]
+//   #[pre(a >= 0)]
+//   #[post(term >= 0)]
 //   fn double(a: i64) -> i64 { a * 2 }
 //
 // The function is translated to a Briev `defn` and proved statically — no
@@ -32,6 +32,10 @@ pub enum Error {
     Parse(String),
     /// The function used a construct outside the pure-integer subset.
     Unsupported(String),
+    /// A contract declaration itself is malformed (for example a duplicated
+    /// slot). Distinct from `Unsupported` so the message carries no subset
+    /// hint that would mislead.
+    Contract(String),
     /// No `brievc` with `--verify-bodies` was found.
     NoCompiler,
     /// The Briev compiler rejected the translated program.
@@ -51,6 +55,7 @@ impl std::fmt::Display for Error {
                  parameters and return, integer arithmetic, comparisons, `let`, \
                  `if`/`else`, `return`, and a trailing expression"
             ),
+            Error::Contract(why) => write!(f, "{why}"),
             Error::NoCompiler => write!(
                 f,
                 "no `brievc` with --verify-bodies found — set BRIEVC to a Briev \
@@ -89,6 +94,9 @@ pub struct FnVerdict {
 pub struct Report {
     /// One entry per contracted function, in source order.
     pub verdicts: Vec<FnVerdict>,
+    /// Advisory messages: renamed or misspelt contract attributes. A warning
+    /// never means "verified" — it means the attribute was not understood.
+    pub warnings: Vec<String>,
 }
 
 impl Report {
@@ -116,13 +124,15 @@ impl Report {
 
 /// Verify the contracted functions in a Rust source string.
 ///
-/// Functions without `#[requires]`/`#[ensures]` are ignored — only written
+/// Functions without `#[pre]`/`#[post]` are ignored — only written
 /// contracts are obligations.
 pub fn check_source(source: &str) -> Result<Report, Error> {
     let file = syn::parse_file(source).map_err(|e| Error::Parse(e.to_string()))?;
-    let translated = translate::translate_file(&file)?;
+    let (translated, warnings) = translate::translate_file(&file)?;
     let discharge = brievc::discharge(&translated)?;
-    Ok(assemble(&translated, &discharge))
+    let mut report = assemble(&translated, &discharge);
+    report.warnings = warnings;
+    Ok(report)
 }
 
 /// Verify the contracted functions in a Rust file.
@@ -144,7 +154,10 @@ fn assemble(translated: &[TranslatedFn], discharge: &Discharge) -> Report {
             }
         })
         .collect();
-    Report { verdicts }
+    Report {
+        verdicts,
+        warnings: Vec::new(),
+    }
 }
 
 /// Classify one declaration from the discharge report.
@@ -182,6 +195,7 @@ mod tests {
     #[test]
     fn report_helpers_split_outcomes() {
         let report = Report {
+            warnings: Vec::new(),
             verdicts: vec![
                 FnVerdict {
                     name: "a".into(),
@@ -206,7 +220,7 @@ mod tests {
 
     #[test]
     fn wrong_boundary_type_is_reported_without_running_the_compiler() {
-        let err = check_source("#[ensures(true)]\nfn f(a: u32) -> i64 { 0 }\n")
+        let err = check_source("#[post(true)]\nfn f(a: u32) -> i64 { 0 }\n")
             .expect_err("u32 must be rejected");
         assert!(matches!(err, Error::Unsupported(_)), "{err}");
     }
@@ -217,7 +231,7 @@ mod tests {
             return;
         }
         let report = check_source(
-            "#[requires(a >= 0)]\n#[ensures(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
+            "#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
         )
         .expect("check");
         assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
@@ -228,10 +242,9 @@ mod tests {
         if !have_compiler() {
             return;
         }
-        let report = check_source(
-            "#[requires(a >= 0)]\n#[ensures(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n",
-        )
-        .expect("check");
+        let report =
+            check_source("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
+                .expect("check");
         assert_eq!(report.verdicts[0].outcome, Outcome::Violated);
     }
 }

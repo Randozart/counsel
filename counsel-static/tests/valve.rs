@@ -26,7 +26,7 @@ fn verify(source: &str) -> Option<Report> {
 #[test]
 fn proven_contract_is_discharged() {
     let Some(report) = verify(
-        "#[requires(a >= 0)]\n#[ensures(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
+        "#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
     ) else {
         return;
     };
@@ -39,7 +39,7 @@ fn proven_contract_is_discharged() {
 #[test]
 fn false_contract_is_violated() {
     let Some(report) =
-        verify("#[requires(a >= 0)]\n#[ensures(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
+        verify("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
     else {
         return;
     };
@@ -53,7 +53,7 @@ fn false_contract_is_violated() {
 fn undecidable_contract_is_advisory() {
     // `a * a` vs `a * 2` is neither structurally equal nor decidable by
     // interval bounds: the prover must say "could not prove", not "violated".
-    let Some(report) = verify("#[ensures(term == a * a)]\nfn scale(a: i64) -> i64 { a * 2 }\n")
+    let Some(report) = verify("#[post(term == a * a)]\nfn scale(a: i64) -> i64 { a * 2 }\n")
     else {
         return;
     };
@@ -66,7 +66,7 @@ fn undecidable_contract_is_advisory() {
 #[test]
 fn path_split_body_is_proven() {
     let Some(report) = verify(
-        "#[requires(a >= 0)]\n#[ensures(term >= 0)]\n\
+        "#[pre(a >= 0)]\n#[post(term >= 0)]\n\
          fn clamp(a: i64) -> i64 { if a > 5 { return a; } 0 }\n",
     ) else {
         return;
@@ -78,7 +78,7 @@ fn path_split_body_is_proven() {
 #[test]
 fn else_branch_is_proven() {
     let Some(report) = verify(
-        "#[requires(a >= 0)]\n#[ensures(term >= 0)]\n\
+        "#[pre(a >= 0)]\n#[post(term >= 0)]\n\
          fn pick(a: i64) -> i64 { if a > 5 { a } else { 0 } }\n",
     ) else {
         return;
@@ -90,8 +90,8 @@ fn else_branch_is_proven() {
 #[test]
 fn multiple_declarations_are_verified_independently() {
     let Some(report) = verify(
-        "#[requires(a >= 0)]\n#[ensures(term == a + 1)]\nfn inc(a: i64) -> i64 { a + 1 }\n\
-         #[requires(a >= 0)]\n#[ensures(term == 0)]\nfn bad(a: i64) -> i64 { 3 }\n",
+        "#[pre(a >= 0)]\n#[post(term == a + 1)]\nfn inc(a: i64) -> i64 { a + 1 }\n\
+         #[pre(a >= 0)]\n#[post(term == 0)]\nfn bad(a: i64) -> i64 { 3 }\n",
     ) else {
         return;
     };
@@ -112,7 +112,7 @@ fn uncontracted_functions_are_ignored() {
 /// Unsupported constructs are rejected with a clear, non-compiler error.
 #[test]
 fn unsupported_constructs_are_rejected() {
-    let err = check_source("#[ensures(term >= 0)]\nfn f(a: i64) -> i64 { helper(a) }\n")
+    let err = check_source("#[post(term >= 0)]\nfn f(a: i64) -> i64 { helper(a) }\n")
         .expect_err("calls are outside the subset");
     assert!(err.to_string().contains("pure-integer subset"), "{err}");
 }

@@ -126,8 +126,8 @@ translated Rust ones.
 use counsel_static::{check_source, Outcome};
 
 let report = check_source(r#"
-    #[requires(a >= 0)]
-    #[ensures(term == a + a)]
+    #[pre(a >= 0)]
+    #[post(term == a + a)]
     fn double(a: i64) -> i64 { a + a }
 "#)?;
 assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
@@ -137,7 +137,7 @@ assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
 A body that contradicts its contract is caught at check time:
 
 ```rust
-let report = check_source("#[ensures(term == 0)]\nfn lies(a: i64) -> i64 { 5 }")?;
+let report = check_source("#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }")?;
 assert_eq!(report.verdicts[0].outcome, Outcome::Violated);
 ```
 

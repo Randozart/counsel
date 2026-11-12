@@ -11,8 +11,8 @@
 //
 // Contracts arrive as ordinary attributes:
 //
-//   #[requires(a >= 0)]
-//   #[ensures(term >= 0)]
+//   #[pre(a >= 0)]
+//   #[post(term >= 0)]
 //   fn double(a: i64) -> i64 { a * 2 }
 //
 // and become `defn double(a: Int) [a >= 0][term >= 0] -> Int { term a * 2; };`
@@ -30,22 +30,25 @@ pub struct TranslatedFn {
 
 /// Translate every contracted function in a parsed Rust file.
 ///
-/// Functions without `#[requires]`/`#[ensures]` are skipped silently — only
-/// declared contracts are propositions to prove.
-pub fn translate_file(file: &syn::File) -> Result<Vec<TranslatedFn>, Error> {
+/// Returns the translated declarations plus advisory warnings for renamed or
+/// misspelt contract attributes. Functions carrying neither `#[pre]` nor
+/// `#[post]` are skipped — only declared contracts are propositions to prove.
+pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String>), Error> {
     let mut out = Vec::new();
+    let mut warnings = Vec::new();
     for item in &file.items {
         let syn::Item::Fn(item_fn) = item else {
             continue;
         };
-        let pre = contract_attr(&item_fn.attrs, "requires")?;
-        let post = contract_attr(&item_fn.attrs, "ensures")?;
+        let pre = contract_attr(&item_fn.attrs, "pre")?;
+        let post = contract_attr(&item_fn.attrs, "post")?;
+        warnings.extend(attribute_warnings(&item_fn.attrs));
         if pre.is_none() && post.is_none() {
             continue;
         }
         out.push(translate_fn(item_fn, pre, post)?);
     }
-    Ok(out)
+    Ok((out, warnings))
 }
 
 /// Translate one contracted function.
@@ -108,18 +111,104 @@ fn require_i64(name: &str, what: &str, ty: &syn::Type) -> Result<(), Error> {
     }
 }
 
-/// Read an attribute's single expression argument, e.g. `#[requires(a >= 0)]`.
+/// Read an attribute's single expression argument, e.g. `#[pre(a >= 0)]`.
+/// Read a contract attribute, rejecting duplicates.
+///
+/// `contract_attr` must scan every attribute: returning on the first match
+/// silently dropped the second `#[pre(...)]`, so a repeated slot is an error
+/// rather than an invisible precedence rule.
 fn contract_attr(attrs: &[syn::Attribute], name: &str) -> Result<Option<String>, Error> {
+    let mut found: Option<String> = None;
     for attr in attrs {
         if !attr.path().is_ident(name) {
             continue;
         }
+        if found.is_some() {
+            return Err(Error::Contract(format!(
+                "more than one `#[{name}(...)]` on this function — keep one"
+            )));
+        }
         let expr: syn::Expr = attr
             .parse_args()
             .map_err(|e| Error::Parse(format!("`#[{name}(...)]`: {e}")))?;
-        return Ok(Some(translate_expr(&expr, true)?));
+        found = Some(translate_expr(&expr, true)?);
     }
-    Ok(None)
+    Ok(found)
+}
+
+/// Advisory warnings for contract attributes that were renamed or misspelt.
+///
+/// A misspelt attribute used to mean "no contract, no verification, no
+/// warning" — the function was skipped silently. Ordinary Rust attributes
+/// (`#[test]`, `#[inline]`, `#[derive(...)]`) never warn: renamed names are
+/// matched exactly, and a near-miss is only considered when the attribute
+/// carries arguments, which contract attributes always do.
+fn attribute_warnings(attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        let Some(ident) = attr.path().get_ident() else {
+            continue;
+        };
+        let name = ident.to_string();
+        if matches!(name.as_str(), "pre" | "post" | "case") {
+            continue;
+        }
+        let hint = match removed_name_hint(&name) {
+            Some(hint) => Some(hint),
+            None if !matches!(attr.meta, syn::Meta::Path(_)) => near_miss_hint(&name),
+            None => None,
+        };
+        if let Some(hint) = hint {
+            out.push(format!(
+                "`#[{name}]` is not a Counsel contract attribute — {hint}; \
+                 accepted: `#[pre(...)]`, `#[post(...)]`, `#[case(...)]`"
+            ));
+        }
+    }
+    out
+}
+
+/// The replacement for an attribute name this crate used to accept.
+fn removed_name_hint(name: &str) -> Option<&'static str> {
+    match name {
+        "requires" => Some("it was renamed to `#[pre(...)]`"),
+        "ensures" => Some("it was renamed to `#[post(...)]`"),
+        "precondition" | "pre_condition" => Some("use `#[pre(...)]`"),
+        "postcondition" | "post_condition" => Some("use `#[post(...)]`"),
+        "intent" | "intend" | "expect" | "expected" | "required" => {
+            Some("use `#[case(...)]` to list intended cases")
+        }
+        _ => None,
+    }
+}
+
+/// A "did you mean" hint for a name one edit away from a contract attribute.
+fn near_miss_hint(name: &str) -> Option<&'static str> {
+    ["pre", "post", "case"]
+        .into_iter()
+        .find(|candidate| edit_distance(name, candidate) <= 1)
+        .map(|candidate| match candidate {
+            "pre" => "did you mean `#[pre(...)]`?",
+            "post" => "did you mean `#[post(...)]`?",
+            _ => "did you mean `#[case(...)]`?",
+        })
+}
+
+/// Levenshtein distance; names are a few bytes, so the quadratic cost is moot.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b_chars.len()).collect();
+    for (i, a_char) in a.chars().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, b_char) in b_chars.iter().enumerate() {
+            let substitution = previous[j] + usize::from(a_char != *b_char);
+            let insertion = current[j] + 1;
+            let deletion = previous[j + 1] + 1;
+            current.push(substitution.min(insertion).min(deletion));
+        }
+        previous = current;
+    }
+    previous[b_chars.len()]
 }
 
 /// Translate a statement block into Briev statements.
@@ -390,14 +479,13 @@ mod tests {
     /// Parse Rust source and translate its contracted functions.
     fn translate(source: &str) -> Vec<TranslatedFn> {
         let file = syn::parse_file(source).expect("parse rust");
-        translate_file(&file).expect("translate")
+        translate_file(&file).expect("translate").0
     }
 
     #[test]
     fn tail_expression_becomes_term() {
-        let out = translate(
-            "#[requires(a >= 0)]\n#[ensures(term >= a)]\nfn double(a: i64) -> i64 { a * 2 }\n",
-        );
+        let out =
+            translate("#[pre(a >= 0)]\n#[post(term >= a)]\nfn double(a: i64) -> i64 { a * 2 }\n");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "double");
         assert!(out[0].briev.contains("[a >= 0][term >= a]"));
@@ -407,7 +495,7 @@ mod tests {
     #[test]
     fn return_and_if_become_guard_and_term() {
         let out =
-            translate("#[ensures(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { return a; } 0 }\n");
+            translate("#[post(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { return a; } 0 }\n");
         let briev = &out[0].briev;
         assert!(briev.contains("when a > 5 { term a; };"), "{briev}");
         assert!(briev.contains("term 0;"), "{briev}");
@@ -416,7 +504,7 @@ mod tests {
     #[test]
     fn else_arm_of_terminating_branches_is_emitted_unguarded() {
         let out =
-            translate("#[ensures(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { a } else { 0 } }\n");
+            translate("#[post(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { a } else { 0 } }\n");
         let briev = &out[0].briev;
         assert!(briev.contains("when a > 5 { term a; };"), "{briev}");
         // Both arms produce a value: reaching the else body implies the guard
@@ -431,7 +519,7 @@ mod tests {
         // The then-arm does not terminate (its last statement is a `let`),
         // so the else arm must stay behind the inverted guard.
         let out = translate(
-            "#[ensures(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { let m = a; } else { 0 } }\n",
+            "#[post(term >= 0)]\nfn f(a: i64) -> i64 { if a > 5 { let m = a; } else { 0 } }\n",
         );
         let briev = &out[0].briev;
         assert!(briev.contains("when a <= 5 { term 0; };"), "{briev}");
@@ -439,8 +527,7 @@ mod tests {
 
     #[test]
     fn let_binding_is_typed_int() {
-        let out =
-            translate("#[ensures(term == n + 1)]\nfn f(n: i64) -> i64 { let m = n + 1; m }\n");
+        let out = translate("#[post(term == n + 1)]\nfn f(n: i64) -> i64 { let m = n + 1; m }\n");
         assert!(
             out[0].briev.contains("let m: Int = n + 1;"),
             "{}",
@@ -455,7 +542,55 @@ mod tests {
 
     #[test]
     fn non_i64_boundary_is_rejected() {
-        let file = syn::parse_file("#[ensures(true)]\nfn f(a: u32) -> i64 { 0 }\n").unwrap();
+        let file = syn::parse_file("#[post(true)]\nfn f(a: u32) -> i64 { 0 }\n").unwrap();
         assert!(matches!(translate_file(&file), Err(Error::Unsupported(_))));
+    }
+}
+
+#[cfg(test)]
+mod contract_attribute_tests {
+    use super::*;
+
+    /// Parse Rust source and translate its contracted functions.
+    fn translate(source: &str) -> (Vec<TranslatedFn>, Vec<String>) {
+        let file = syn::parse_file(source).expect("parse rust");
+        translate_file(&file).expect("translate")
+    }
+
+    /// Two attributes for one slot is an error, never a silent first-wins.
+    #[test]
+    fn duplicate_pre_is_rejected() {
+        let file = syn::parse_file("#[pre(a > 0)]\n#[pre(a > 1)]\nfn f(a: i64) -> i64 { a }\n")
+            .expect("parse");
+        let err = translate_file(&file).expect_err("duplicate #[pre] must be rejected");
+        assert!(err.to_string().contains("more than one"), "{err}");
+    }
+
+    /// The pre-rename spelling warns and names its replacement.
+    #[test]
+    fn renamed_attribute_warns_with_the_replacement() {
+        let (_, warnings) =
+            translate("#[requires(a > 0)]\n#[post(term >= 0)]\nfn f(a: i64) -> i64 { a }\n");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("renamed to `#[pre(...)]`"),
+            "{warnings:?}"
+        );
+    }
+
+    /// `#[pre]` alone is a valid contract; the postcondition stays optional.
+    #[test]
+    fn pre_only_is_a_contract() {
+        let (out, warnings) = translate("#[pre(a > 0)]\nfn f(a: i64) -> i64 { a }\n");
+        assert_eq!(out.len(), 1);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Ordinary Rust attributes never produce a warning.
+    #[test]
+    fn ordinary_attributes_never_warn() {
+        let (_, warnings) =
+            translate("#[inline(always)]\n#[test]\n#[pre(a > 0)]\nfn f(a: i64) -> i64 { a }\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }
