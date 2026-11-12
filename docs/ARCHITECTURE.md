@@ -173,7 +173,7 @@ passed through unchanged.
 
 ### 3.3 The subset
 
-Accepted: `i64` parameters and return, integer literals, identifiers, unary
+Accepted: integer parameters and return (any width, with domain facts), integer literals, identifiers, unary
 `-`/`!`, arithmetic `+ - * / %`, comparisons, `&&`/`||`, `let`, `if`/`else`,
 `return`, a trailing expression, and `#[pre]`/`#[post]`.
 
