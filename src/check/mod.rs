@@ -132,11 +132,51 @@ impl Report {
 /// contracts are obligations.
 pub fn check_source(source: &str) -> Result<Report, Error> {
     let file = syn::parse_file(source).map_err(|e| Error::Parse(e.to_string()))?;
-    let (translated, warnings) = translate::translate_file(&file)?;
+    // A single unsupported function must not hide the others. `translate_file`
+    // is all-or-nothing (callers that want strictness keep using it), so on
+    // failure retry one function at a time and record each reject as a warning.
+    // Without this, one expressive body masked every provable body beside it.
+    let (translated, warnings) = match translate::translate_file(&file) {
+        Ok(pair) => pair,
+        Err(first) => translate_each(&file, first)?,
+    };
     let discharge = brievc::discharge(&translated)?;
     let mut report = assemble(&translated, &discharge);
     report.warnings = warnings;
     Ok(report)
+}
+
+/// Translate function by function, recording rejects instead of aborting.
+///
+/// Returns the original error when nothing at all could be translated, so a
+/// wholly unsupported file still fails rather than reporting an empty pass.
+fn translate_each(
+    file: &syn::File,
+    first: Error,
+) -> Result<(Vec<TranslatedFn>, Vec<String>), Error> {
+    let mut defns = Vec::new();
+    let mut warnings = Vec::new();
+    for item in &file.items {
+        if !matches!(item, syn::Item::Fn(_)) {
+            continue;
+        }
+        let single = syn::File {
+            shebang: None,
+            attrs: Vec::new(),
+            items: vec![item.clone()],
+        };
+        match translate::translate_file(&single) {
+            Ok((found, found_warnings)) => {
+                defns.extend(found);
+                warnings.extend(found_warnings);
+            }
+            Err(reason) => warnings.push(format!("skipped: {reason}")),
+        }
+    }
+    if defns.is_empty() {
+        return Err(first);
+    }
+    Ok((defns, warnings))
 }
 
 /// Verify the contracted functions in a Rust file.
@@ -265,5 +305,32 @@ mod tests {
             check_source("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
                 .expect("check");
         assert_eq!(report.verdicts[0].outcome, Outcome::Violated);
+    }
+}
+
+#[cfg(test)]
+mod masking_tests {
+    use super::*;
+
+    /// One unsupported function must not hide a translatable one beside it.
+    ///
+    /// `translate_file` stays all-or-nothing (its callers want strictness); the
+    /// resilience lives in `check_source`, which retries per function.
+    #[test]
+    fn a_bad_function_does_not_mask_a_good_one() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\nfn bad(a: i64) -> i64 { a[0] }\n\
+             #[post(term >= 0)]\nfn good(a: i64) -> i64 { a }\n",
+        )
+        .expect("parse");
+        let first = translate::translate_file(&file)
+            .expect_err("file-level translation is all-or-nothing");
+        let (defns, warnings) = translate_each(&file, first).expect("per-function retry");
+        assert_eq!(defns.len(), 1, "the good function should survive: {warnings:?}");
+        assert_eq!(defns[0].name, "good");
+        assert!(
+            warnings.iter().any(|warning| warning.contains("skipped")),
+            "the skip must be reported, not silent: {warnings:?}"
+        );
     }
 }
