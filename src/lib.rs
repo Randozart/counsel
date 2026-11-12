@@ -138,6 +138,33 @@ pub fn eq(a: i64, b: i64) -> bool {
     unsafe { bindings::eq(a, b) == 1 }
 }
 
+/// Runs a Briev-orchestrated pre → body → post check.
+///
+/// The ordering and short-circuiting live in Briev (`bridge/counsel.bv`); this
+/// wrapper only marshals the callbacks across the C ABI and maps the verdict
+/// code. The callbacks are plain `extern "C"` functions — since briev-lang
+/// 43519b01 the Briev export adapts a flat host pointer into its internal
+/// closure slot, so a Rust closure with `extern "C"` linkage works directly.
+///
+/// Returns [`Verdict::Pass`] when both obligations hold, otherwise a
+/// [`Verdict::Fail`] naming which obligation fired.
+pub fn run_checked(
+    pre: extern "C" fn(i64) -> i64,
+    body: extern "C" fn(i64) -> i64,
+    post: extern "C" fn(i64, i64) -> i64,
+    x: i64,
+) -> Verdict {
+    // Safety: the export is pure C ABI; each callback is `extern "C"` and
+    // therefore safe to invoke from foreign code.
+    let code = unsafe { bindings::run_checked(pre, body, post, x) };
+    match code {
+        0 => Verdict::Pass,
+        1 => Verdict::Fail("precondition failed".into()),
+        2 => Verdict::Fail("postcondition failed".into()),
+        other => Verdict::Fail(format!("unknown verdict code {other}")),
+    }
+}
+
 /// A `<,>,<=,>=,in-range` predicate transported to Briev as data (Ambition A2).
 ///
 /// The predicate is *not* a Rust closure: it is a tagged variant, serialised to

@@ -32,6 +32,20 @@ extern "C" {
     pub fn is_nonneg(x: i64) -> i64;
     /// Briev export `eq`: 1 if `a == b`, else 0.
     pub fn eq(a: i64, b: i64) -> i64;
+    /// Briev export `run_checked`: pre -> body -> post orchestration.
+    /// Returns 0 when both obligations hold, 1 for a failed precondition,
+    /// 2 for a failed postcondition.
+    ///
+    /// The fn-typed parameters are flat C function pointers: since briev-lang
+    /// 43519b01 an exported Briev defn adapts a host pointer into its internal
+    /// closure slot through a generated trampoline, so no slot construction is
+    /// needed here.
+    pub fn run_checked(
+        pre: extern "C" fn(i64) -> i64,
+        f: extern "C" fn(i64) -> i64,
+        post: extern "C" fn(i64, i64) -> i64,
+        x: i64,
+    ) -> i64;
     /// Briev export `eval_pred`: predicate-as-data dispatch over `x`.
     /// op: 0=GT,1=GE,2=LT,3=LE,4=IN; returns 1 when the inequality holds.
     pub fn eval_pred(op: i64, a: i64, b: i64, x: i64) -> i64;

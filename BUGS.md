@@ -5,7 +5,7 @@ evidence, the resolution, and the path to permanent fix.
 
 ## 2026-11-11 — Cross-ABI function-pointer params SIGSEGV (A1 blocker)
 
-**Status:** Resolved-by-avoidance (reliable redesign); **fix pending in Briev backend.**
+**Status:** FIXED — briev-lang 43519b01. An exported Briev defn now adapts a host's flat C function pointer into its internal closure slot through a generated trampoline, so `run_checked` is authored in Briev again (323de0b) and the Rust facade passes `extern "C"` callbacks directly. The data-only workaround below remains valid and is still used by the predicate primitives.
 
 ### What failed
 

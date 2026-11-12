@@ -7,7 +7,8 @@
 // the safe facade. If this passes, the scaffold spike's exit criteria are met.
 
 use counsel::{
-    add, check_op, contract, eq, in_range, nonneg, positive, satisfies, verify, within, Op, Verdict,
+    add, check_op, contract, eq, in_range, nonneg, positive, run_checked, satisfies, verify,
+    within, Op, Verdict,
 };
 
 /// The Briev-authored `add` export computes a sum through the C ABI.
@@ -186,4 +187,54 @@ fn a2_and_a1_agree() {
         assert_eq!(positive(x), satisfies(Op::Gt(0), x), "disagreement at {x}");
         assert_eq!(nonneg(x), satisfies(Op::Ge(0), x), "disagreement at {x}");
     }
+}
+
+// --- A1 (restored): Briev-orchestrated pre -> body -> post callbacks ---
+
+/// C-ABI precondition: the input must be positive.
+extern "C" fn positive_pre(x: i64) -> i64 {
+    (x > 0) as i64
+}
+
+/// C-ABI body under test: doubles its input.
+extern "C" fn double_body(x: i64) -> i64 {
+    x * 2
+}
+
+/// C-ABI postcondition: the doubled output stays non-negative.
+extern "C" fn nonneg_post(_x: i64, ret: i64) -> i64 {
+    (ret >= 0) as i64
+}
+
+/// Both obligations hold, so the Briev orchestrator returns Pass.
+#[test]
+fn run_checked_passes_when_obligations_hold() {
+    assert_eq!(
+        run_checked(positive_pre, double_body, nonneg_post, 5),
+        Verdict::Pass
+    );
+}
+
+/// A negative input violates the precondition; the body never runs.
+#[test]
+fn run_checked_reports_failed_precondition() {
+    assert_eq!(
+        run_checked(positive_pre, double_body, nonneg_post, -3),
+        Verdict::Fail("precondition failed".into())
+    );
+}
+
+/// A body whose result violates the postcondition is reported as such.
+#[test]
+fn run_checked_reports_failed_postcondition() {
+    extern "C" fn negate(x: i64) -> i64 {
+        -x
+    }
+    extern "C" fn positive_post(_x: i64, ret: i64) -> i64 {
+        (ret > 0) as i64
+    }
+    assert_eq!(
+        run_checked(positive_pre, negate, positive_post, 7),
+        Verdict::Fail("postcondition failed".into())
+    );
 }
