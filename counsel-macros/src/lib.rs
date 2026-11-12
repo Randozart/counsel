@@ -36,3 +36,13 @@ pub fn post(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn case(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
+
+/// `#[invariant(expr)]` — a loop invariant: what holds before, during and after
+/// a loop, and what lets a variable-trip-count loop be checked at all.
+///
+/// Expands to the annotated item unchanged, like the other contract attributes:
+/// the tokens are the contract, and `counsel::check` reads them from the source.
+#[proc_macro_attribute]
+pub fn invariant(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}

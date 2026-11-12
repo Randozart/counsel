@@ -96,6 +96,18 @@ fn translate_fn(
 ) -> Result<TranslatedFn, Error> {
     let name = item_fn.sig.ident.to_string();
     let (params, facts) = translate_params(&name, &item_fn.sig)?;
+    // P4 step (a): the invariant surface is recognised, and duplicates are
+    // rejected the same way repeated `#[pre]` slots are. Preservation checking
+    // (VC2) is not wired yet, so an invariant is refused precisely rather than
+    // silently ignored — a contract that is parsed but not checked would read as
+    // support that does not exist.
+    if contract_attr(&item_fn.attrs, "invariant")?.is_some() {
+        return Err(Error::Unsupported(format!(
+            "`{name}`: `#[invariant(...)]` is recognised but loop preservation \
+             checking is not implemented yet — use constant loop bounds, or verify \
+             the loop's caller instead"
+        )));
+    }
     let post = post.unwrap_or_else(|| "true".to_string());
     // Each narrower or unsigned parameter contributes a domain fact. Everything
     // crosses into Briev as one `Int`, so without these the prover would happily
@@ -1320,5 +1332,35 @@ mod assign_tests {
             .expect("parse");
         let err = translate_file(&file).expect_err("index target must be refused");
         assert!(format!("{err}").contains("plain name"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::*;
+
+    /// The annotation is recognised, and refusing it says why rather than
+    /// pretending the contract was checked.
+    #[test]
+    fn invariant_is_recognised_and_refused_precisely() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\n#[invariant(acc >= 0)]\nfn f(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + i; } acc }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("preservation is not wired yet");
+        let text = format!("{err}");
+        assert!(text.contains("preservation"), "{text}");
+        assert!(text.contains("not implemented yet"), "{text}");
+    }
+
+    /// A repeated invariant is rejected, like a repeated `#[pre]` slot.
+    #[test]
+    fn duplicate_invariant_is_rejected() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\n#[invariant(acc >= 0)]\n#[invariant(acc > 0)]\nfn f(n: i64) -> i64 { n }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("duplicate slots must be rejected");
+        assert!(format!("{err}").contains("more than one"), "{err}");
     }
 }
