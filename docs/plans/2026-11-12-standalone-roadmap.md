@@ -1,8 +1,9 @@
 # Roadmap — Counsel as a standalone tool
 
 **Date:** 2026-11-12
-**Status:** items 1–3 done. C1 (`2b361ed2`, `3c41fe6`), C6+C5 (`860abe10`),
-T1 (`4574ca8`), T2+T3 (`088e631`). Next: C2 packaging; C3/C4 prover depth open.
+**Status:** items 1–3 done and C4 done. C1 (`2b361ed2`, `3c41fe6`), C6+C5
+(`860abe10`), T1 (`4574ca8`), T2+T3 (`088e631`), C4 (`984ca4ac`). Remaining:
+C2 packaging and C3 inter-procedural facts.
 **Basis:** `2026-11-12-standalone-assessment.md` (readiness + debt inventory).
 
 Order follows the assessment: trust and interface first, then adoption, then depth.

@@ -226,6 +226,12 @@ into the compile pipeline behind the flag.
   **skipped** — never proven, never falsely rejected.
 - **Aggregation:** `BodyReport { proven, unproven, violated }`. `compile.rs`
   turns `violated` into a hard error and `unproven` into an advisory warning.
+- **Solver escalation (C4):** an `Undecided` path is handed to Z3 as
+  `facts ∧ ¬post`. `Unsat` ⇒ proven; `Sat` ⇒ refuted only when the result is
+  fully determined (no free identifier survives substitution); `Unknown`, or no
+  solver installed, ⇒ `Unproven` as before. A parameter-dependent
+  counterexample stays advisory: the stdlib's optimistic `[true][term >= 0]`
+  contracts are refutable for some inputs and must not fail a build.
 
 `counsel-static` inherits exactly this behaviour, which is why `Unproven` never
 counts as a pass.
@@ -242,7 +248,7 @@ counts as a pass.
 | Runtime checks are cheap, pure `Int` calls into native code | Yes |
 | Static proof needs no runtime execution | Yes |
 | Full Rust support | **No** — `i64` subset only |
-| Deciding every true contract | **No** — bounds-only, no Z3 arbiter yet |
+| Deciding every true contract | **No** — bounds + Z3 when installed; parameter-dependent goals stay advisory |
 | Works without a Briev compiler | **No** — `brievc` required at check time |
 
 ---
