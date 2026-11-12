@@ -16,6 +16,31 @@
 
 mod bindings;
 
+/// Contract attributes: `#[pre(...)]`, `#[post(...)]`, `#[case(...)]`.
+///
+/// These are **inert markers**: they exist so rustc accepts the syntax, and
+/// contribute no runtime behaviour. Enforcement comes from [`check`] (static,
+/// `--features static`) or from [`contract`] (runtime).
+///
+/// ```
+/// use counsel::{post, pre};
+///
+/// #[pre(a >= 0)]
+/// #[post(term == a + a)]
+/// fn double(a: i64) -> i64 { a + a }
+///
+/// assert_eq!(double(3), 6);
+/// ```
+#[cfg(feature = "macros")]
+pub use counsel_macros::{case, post, pre};
+
+/// Static verification: translate a restricted pure-integer Rust subset and
+/// discharge its contracts through Briev's own body prover.
+///
+/// Enabled with `--features static`; the `counsel-check` binary ships with it.
+#[cfg(feature = "static")]
+pub mod check;
+
 /// The type produced by a Counsel check predicate: pass or fail with a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {

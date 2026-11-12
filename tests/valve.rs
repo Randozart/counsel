@@ -7,11 +7,11 @@
 // return early when none is installed, so the suite stays green on machines
 // without a Briev checkout (the unit tests still cover the translator).
 
-use counsel_static::{check_source, Outcome, Report};
+use counsel::check::{check_source, Outcome, Report};
 
 /// Whether a Briev compiler with `--verify-bodies` is available.
 fn have_compiler() -> bool {
-    counsel_static::brievc::find_compiler().is_some()
+    counsel::check::brievc::find_compiler().is_some()
 }
 
 /// Verify a snippet, skipping the test when no compiler is installed.
@@ -25,9 +25,9 @@ fn verify(source: &str) -> Option<Report> {
 /// A body that provably satisfies its postcondition is discharged statically.
 #[test]
 fn proven_contract_is_discharged() {
-    let Some(report) = verify(
-        "#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
-    ) else {
+    let Some(report) =
+        verify("#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n")
+    else {
         return;
     };
     assert_eq!(report.verdicts.len(), 1);
@@ -38,8 +38,7 @@ fn proven_contract_is_discharged() {
 /// A constant body that contradicts its postcondition is a hard violation.
 #[test]
 fn false_contract_is_violated() {
-    let Some(report) =
-        verify("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
+    let Some(report) = verify("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
     else {
         return;
     };
@@ -53,8 +52,7 @@ fn false_contract_is_violated() {
 fn undecidable_contract_is_advisory() {
     // `a * a` vs `a * 2` is neither structurally equal nor decidable by
     // interval bounds: the prover must say "could not prove", not "violated".
-    let Some(report) = verify("#[post(term == a * a)]\nfn scale(a: i64) -> i64 { a * 2 }\n")
-    else {
+    let Some(report) = verify("#[post(term == a * a)]\nfn scale(a: i64) -> i64 { a * 2 }\n") else {
         return;
     };
     assert_eq!(report.verdicts[0].outcome, Outcome::Unproven);

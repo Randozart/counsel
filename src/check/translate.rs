@@ -17,7 +17,7 @@
 //
 // and become `defn double(a: Int) [a >= 0][term >= 0] -> Int { term a * 2; };`
 
-use crate::Error;
+use super::Error;
 
 /// One function translated into Briev source.
 #[derive(Debug, Clone, PartialEq, Eq)]

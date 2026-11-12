@@ -2,10 +2,10 @@
 
 How Counsel works, as shipped. Two independent halves share one Briev core:
 
-| Half | Crate | When | Question it answers |
+| Half | Crate / feature | When | Question it answers |
 |---|---|---|---|
 | **Runtime checks** | `counsel` | while the program runs | "did this obligation hold for *this* input?" |
-| **Static proof** | `counsel-static` | before compiling / in CI | "does this body hold for *every* input?" |
+| **Static proof** | `counsel` + `--features static` | before compiling / in CI | "does this body hold for *every* input?" |
 
 Both are deliberately narrow and honest: an unproven obligation is never
 reported as a pass.
@@ -28,7 +28,7 @@ reported as a pass.
                     ┌────────────┴────────────┐
              runtime callers            (Phase 4 valve)
                                               │
-                    counsel-static: Rust source text
+                    counsel::check: Rust source text
                                               │  syn parse + subset check
                                               ▼
                      Briev `defn` source (generated)
@@ -48,7 +48,7 @@ in Rust.
 | Predicates, equality, opcode dispatch | **Briev** | 167 | `bridge/counsel.bv` |
 | Obligation orchestration (`run_checked`) + sampler loop (`verify_samples`) | **Briev** | same file | `bridge/counsel.bv` |
 | Body prover (paths, bounds, tri-state verdicts) | Rust | 1,461 | `briev-lang/src/analysis/{verify_bodies,symbolic}.rs` |
-| Rust frontend, compiler discovery, report parsing | Rust | ~640 | `counsel-static/src/` |
+| Rust frontend, compiler discovery, report parsing | Rust | ~640 | `src/check/` |
 | Facade: callback marshalling + verdict mapping | Rust | 308 | `src/lib.rs` |
 
 The orchestration and the sampling loop moved into Briev once the cross-ABI
@@ -129,7 +129,7 @@ the first divergence with input, expected and actual.
 
 ---
 
-## 3. Static half — `counsel-static`
+## 3. Static half — `counsel::check` (`--features static`)
 
 ### 3.1 Pipeline
 
@@ -233,7 +233,7 @@ into the compile pipeline behind the flag.
   counterexample stays advisory: the stdlib's optimistic `[true][term >= 0]`
   contracts are refutable for some inputs and must not fail a build.
 
-`counsel-static` inherits exactly this behaviour, which is why `Unproven` never
+The static half inherits exactly this behaviour, which is why `Unproven` never
 counts as a pass.
 
 ---
@@ -261,10 +261,10 @@ counts as a pass.
 | `build.rs` | compile + link the Briev library |
 | `src/bindings.rs` | C ABI declarations (generated, committed) |
 | `src/lib.rs` | safe runtime facade |
-| `counsel-static/src/translate.rs` | Rust → Briev source |
-| `counsel-static/src/brievc.rs` | compiler discovery + discharge + report parsing |
-| `counsel-static/src/lib.rs` | `Outcome`, `Report`, `check_source`, `check_file` |
-| `tests/smoke.rs`, `counsel-static/tests/valve.rs` | executable specification |
+| `src/check/translate.rs` | Rust → Briev source |
+| `src/check/brievc.rs` | compiler discovery + discharge + report parsing |
+| `src/check/mod.rs` | `Outcome`, `Report`, `check_source`, `check_file` |
+| `tests/smoke.rs`, `tests/valve.rs` | executable specification |
 | `BUGS.md` | the cross-ABI callback blocker and the Briev codegen bug |
 | `docs/EXAMPLES.md` | worked end-to-end walkthroughs |
 
@@ -275,8 +275,8 @@ counts as a pass.
 BRIEVC=/path/to/brievc cargo test -p counsel
 
 # Static half: drives the real prover (needs brievc with --verify-bodies)
-BRIEVC=/path/to/brievc cargo test -p counsel-static
+BRIEVC=/path/to/brievc cargo test --features static
 
-# Whole workspace
-BRIEVC=/path/to/brievc cargo test --workspace
+# Whole workspace (counsel + the attribute companion)
+BRIEVC=/path/to/brievc cargo test --workspace --all-features
 ```

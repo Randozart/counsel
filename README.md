@@ -13,7 +13,7 @@ contracts is part of the Briev compiler itself.
 |---|---|---|
 | Predicates, equality, opcode dispatch | **Briev** (114 lines) | `bridge/counsel.bv` |
 | Body prover (paths, bounds, tri-state verdicts) | Rust (1,461 lines) | `briev-lang/src/analysis/verify_bodies.rs`, `symbolic.rs` |
-| Rust frontend, compiler discovery, report parsing | Rust (~640 lines) | `counsel-static/src/` |
+| Rust frontend, compiler discovery, report parsing | Rust (~640 lines) | `src/check/` |
 | Runtime orchestration and sampler loop | Rust (253 lines) | `src/lib.rs` |
 
 The orchestration belongs in Briev too, and will move there once Briev's
@@ -46,8 +46,8 @@ src/lib.rs          ← safe Rust facade: contract, verify, satisfies, checks
 `brievc` on PATH), compiles the `.bv` machinery to a static library, and links
 it into the crate.
 
-The other half, `counsel-static`, proves contracts **before** the program runs
-by translating a restricted pure-integer Rust subset into Briev `defn`s and
+The static half (`--features static`) proves contracts **before** the program
+runs by translating a restricted pure-integer Rust subset into Briev `defn`s and
 discharging them through `brievc --verify-bodies`.
 
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -55,13 +55,24 @@ Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
 
 ## Install
 
-Three crates, three jobs:
+One crate, one dependency:
 
-| Crate | Add it when | Needs `brievc` |
+```toml
+counsel = "0.1"                                        # runtime API + attributes
+counsel = { version = "0.1", features = ["static"] }   # + static verification
+```
+
+| Feature | Gives you | Needs `brievc` |
 |---|---|---|
-| `counsel-macros` | you want `#[pre]`/`#[post]`/`#[case]` to compile — proc-macro no-ops, so rustc accepts them | no |
-| `counsel-static` | you want contracts proved by Briev's prover | **yes, at check time** |
-| `counsel` | you want the Briev-authored runtime predicates linked in | fetched automatically on linux x86_64 |
+| `macros` (default) | `#[pre]`/`#[post]`/`#[case]` accepted by rustc | no |
+| `static` | the `counsel::check` API and the `counsel-check` binary | **yes, at check time** |
+
+`counsel-macros` is a separate crate only because Rust requires
+`proc-macro = true` crates to stand alone; `counsel` re-exports its attributes,
+so you never add it yourself.
+
+The attributes are **inert markers** — they enforce nothing by themselves.
+Enforcement comes from `counsel-check` (static) or `contract()` (runtime).
 
 `counsel` (the runtime half) needs the compiler **at build time**, and now
 fetches it for you. `build.rs` resolves one in this order:
@@ -93,7 +104,7 @@ cargo build --release --manifest-path briev-lang/Cargo.toml --bin brievc
 export BRIEVC=$PWD/briev-lang/target/release/brievc
 ```
 
-`counsel-static` applies the same order, plus a sibling `briev-lang` checkout.
+The static half applies the same order, plus a sibling `briev-lang` checkout.
 
 ## Quick start
 
@@ -152,19 +163,19 @@ and the feasibility study + decision record in
 - **Phase 1 (A1)** — Briev-computed check predicates + Rust `contract` combinator. ✅
 - **Phase 2** — cross-verification sampler (`verify`). ✅
 - **Phase 3 (A2)** — pure-Briev predicate-as-data (`Op` + `eval_pred`). ✅
-- **Phase 4** — static proof: `counsel-static` translates a restricted
+- **Phase 4** — static proof: the `static` feature translates a restricted
   pure-integer Rust subset into Briev `defn`s and discharges the contracts
   through `brievc --verify-bodies`. ✅
 
 ## Static verification (Phase 4)
 
-The `counsel-static` crate proves contracts **statically** — no runtime checks,
-no sampling. It reuses Briev's own body prover (the `--verify-bodies` gate in
-`briev-lang`), so the same machinery that proves Briev functions proves the
-translated Rust ones.
+With `--features static`, Counsel proves contracts **statically** — no runtime
+checks, no sampling. It reuses Briev's own body prover (the `--verify-bodies`
+gate in `briev-lang`), so the same machinery that proves Briev functions proves
+the translated Rust ones.
 
 ```rust
-use counsel_static::{check_source, Outcome};
+use counsel::check::{check_source, Outcome};
 
 let report = check_source(r#"
     #[pre(a >= 0)]
@@ -172,7 +183,7 @@ let report = check_source(r#"
     fn double(a: i64) -> i64 { a + a }
 "#)?;
 assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
-# Ok::<(), counsel_static::Error>(())
+# Ok::<(), counsel::check::Error>(())
 ```
 
 A body that contradicts its contract is caught at check time:
@@ -206,7 +217,7 @@ callbacks. Full diagnostic + the Briev backend fix path in
 
 **Briev codegen bug found by the valve:** a function whose every path
 terminates inside `when` guards (with no trailing `term`) emits a dangling
-`ret` on an undefined register. `counsel-static` avoids the shape; minimal
+`ret` on an undefined register. Counsel avoids the shape; minimal
 repro and the upstream fix path are in [`BUGS.md`](BUGS.md).
 
 ## License

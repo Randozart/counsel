@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// counsel-static — the Phase 4 valve.
+// Counsel — static verification (the Phase 4 valve).
 //
 // Static pre/post-condition verification for a restricted pure-integer Rust
 // subset, discharged through Briev's own body prover (`--verify-bodies`,
@@ -51,7 +51,7 @@ impl std::fmt::Display for Error {
             Error::Parse(why) => write!(f, "cannot parse Rust source: {why}"),
             Error::Unsupported(why) => write!(
                 f,
-                "{why} — counsel-static verifies a pure-integer subset: `i64` \
+                "{why} — Counsel verifies a pure-integer subset: `i64` \
                  parameters and return, integer arithmetic, comparisons, `let`, \
                  `if`/`else`, `return`, and a trailing expression"
             ),

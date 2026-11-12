@@ -2,10 +2,18 @@
 #
 # Cargo.toml — Counsel crate manifest.
 #
-# The verification machinery is authored in Briev (bridge/counsel.bv) and
-# compiled to a native static library by build.rs, which also links it into
-# this crate. Rust is the thin facade (safe API over the C-ABI bindings in
-# src/bindings.rs).
+# One crate, two halves plus the attributes:
+#   * runtime checks — always built: the Briev-authored predicate core
+#     (bridge/counsel.bv) is compiled to a native static library by build.rs.
+#   * static proof   — `--features static`: translates a restricted pure-integer
+#     Rust subset and discharges it through `brievc --verify-bodies`.
+#   * attributes     — `--features macros` (default): `#[pre]`/`#[post]`/`#[case]`
+#     are inert markers that let the source compile. Enforcement comes from
+#     `counsel-check` (static) or `contract()` (runtime), never the attribute.
+#
+# `counsel-macros` stays a separate crate only because Rust requires
+# `proc-macro = true` crates to stand alone. `counsel` re-exports its
+# attributes, so a user depends on this crate alone.
 
 [package]
 name = "counsel"
@@ -20,14 +28,30 @@ readme = "README.md"
 keywords = ["verification", "contracts", "precondition", "postcondition", "briev"]
 categories = ["development-tools::testing", "compilers"]
 
-[dependencies]
+[features]
+default = ["macros"]
+# Contract attributes: `#[pre]`, `#[post]`, `#[case]` (inert markers).
+macros = ["dep:counsel-macros"]
+# Static verification of a restricted pure-integer Rust subset.
+static = ["dep:syn", "dep:serde_json"]
 
-[build-dependencies]
-# 2026-11-11 (Phase 4 valve): counsel-static translates a restricted
-# pure-integer Rust subset into Briev defns and discharges them through
-# `brievc --verify-bodies` (landed in briev-lang c0ce60dc).
+[dependencies]
+counsel-macros = { version = "0.1", path = "counsel-macros", optional = true }
+serde_json = { version = "1", optional = true }
+syn = { version = "2", features = ["full", "parsing", "extra-traits"], optional = true }
+
+[[bin]]
+name = "counsel-check"
+path = "src/bin/counsel-check.rs"
+required-features = ["static"]
+
+[[test]]
+name = "valve"
+path = "tests/valve.rs"
+required-features = ["static"]
+
 [workspace]
-members = ["counsel-static", "counsel-macros"]
+members = ["counsel-macros"]
 # CI checks out the compiler here (and so may a developer); it is not a member.
 exclude = [".briev-lang"]
 resolver = "2"

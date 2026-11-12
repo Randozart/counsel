@@ -2,7 +2,7 @@
 #
 # counsel-macros — the contract attributes rustc must accept.
 #
-# `counsel-static` verifies contracts by reading the *source text*, so it needs
+# `counsel::check` verifies contracts by reading the *source text*, so it needs
 # no macro. But a real crate has to compile first, and rustc rejects unknown
 # attributes: these macros make `#[pre]`, `#[post]` and `#[case]` legal syntax.
 # Each expands to the item unchanged and contributes nothing at runtime.
@@ -11,8 +11,12 @@
 name = "counsel-macros"
 version = "0.1.0"
 edition = "2021"
-description = "Contract attributes for Counsel (#[pre], #[post], #[case]). They expand to nothing; counsel-static reads the source text."
+description = "Contract attributes for Counsel (#[pre], #[post], #[case]). They expand to nothing; Counsel reads the source text."
 license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/Randozart/counsel"
+homepage = "https://github.com/Randozart/counsel"
+documentation = "https://docs.rs/counsel-macros"
+readme = "../README.md"
 keywords = ["contracts", "verification", "attributes", "counsel"]
 categories = ["development-tools::testing"]
 

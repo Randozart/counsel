@@ -8,8 +8,8 @@
 // reports undecidable bodies as advisory warnings, which maps directly onto
 // this crate's Violated / Unproven / Proven outcomes.
 
-use crate::translate::TranslatedFn;
-use crate::Error;
+use super::translate::TranslatedFn;
+use super::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -91,35 +91,66 @@ fn run_discharge(
     workdir: &Path,
     defns: &[TranslatedFn],
 ) -> Result<Discharge, Error> {
-    let source = workdir.join("counsel_static.bv");
+    let source = workdir.join("counsel_check.bv");
     let pool: String = defns.iter().map(|d| d.briev.as_str()).collect();
     std::fs::write(&source, pool).map_err(|e| Error::Io(format!("{}: {e}", source.display())))?;
     // Ask for the structured report beside the build output (C1).
     let report_path = workdir.join("verify-report.json");
-    let output = Command::new(compiler)
-        .arg("build")
-        .arg(&source)
-        .arg("--library")
-        .arg(FLAG)
-        .arg("--verify-report")
-        .arg(&report_path)
-        .arg("--out")
-        .arg(workdir.join("out"))
-        .output()
-        .map_err(|e| Error::Io(format!("failed to run brievc: {e}")))?;
+    let output = invoke(compiler, workdir, &source, Some(&report_path))?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // A toolchain that predates `--verify-report` rejects the flag outright, so
+    // the run fails before any verdict exists. Retry without it and read the
+    // prose: the report is preferred, never required.
+    if !output.status.success() && rejects_report_flag(&stderr) {
+        let legacy = invoke(compiler, workdir, &source, None)?;
+        let legacy_stderr = String::from_utf8_lossy(&legacy.stderr).to_string();
+        let discharge = parse_report(&legacy_stderr);
+        if !legacy.status.success() && discharge.violated.is_empty() {
+            return Err(Error::Compiler(tail(&legacy_stderr, 12)));
+        }
+        return Ok(settle(defns, discharge));
+    }
+
     // Prefer the structured report: the human diagnostics are prose, and a
-    // rewording would silently turn a violation into "proven". A compiler that
-    // predates --verify-report writes no file, so text parsing stays as the
-    // fallback for older toolchains.
-    let mut discharge = read_report(&report_path).unwrap_or_else(|| parse_report(&stderr));
+    // rewording would silently turn a violation into "proven".
+    let discharge = read_report(&report_path).unwrap_or_else(|| parse_report(&stderr));
     if !output.status.success() && discharge.violated.is_empty() {
         // A compiler-side failure (parse/type error, or a prover crash) is not
         // a contract verdict — surface it rather than inventing an outcome.
         return Err(Error::Compiler(tail(&stderr, 12)));
     }
+    Ok(settle(defns, discharge))
+}
+
+/// Run one build of the translated pool, optionally requesting the report.
+fn invoke(
+    compiler: &Path,
+    workdir: &Path,
+    source: &Path,
+    report: Option<&Path>,
+) -> Result<std::process::Output, Error> {
+    let mut command = Command::new(compiler);
+    command.arg("build").arg(source).arg("--library").arg(FLAG);
+    if let Some(report) = report {
+        command.arg("--verify-report").arg(report);
+    }
+    command
+        .arg("--out")
+        .arg(workdir.join("out"))
+        .output()
+        .map_err(|e| Error::Io(format!("failed to run brievc: {e}")))
+}
+
+/// Whether the compiler rejected `--verify-report` itself (an older toolchain).
+fn rejects_report_flag(stderr: &str) -> bool {
+    stderr.contains("unknown flag") && stderr.contains("verify-report")
+}
+
+/// Attach the caller-known proof names to the discharge set.
+fn settle(defns: &[TranslatedFn], mut discharge: Discharge) -> Discharge {
     discharge.proven = proven_names(defns, &discharge);
-    Ok(discharge)
+    discharge
 }
 
 /// Parse the three-way verdict out of the compiler's stderr.
@@ -184,7 +215,7 @@ fn temp_workdir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("counsel-static-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!("counsel-check-{}-{nanos}", std::process::id()))
 }
 
 /// Read the compiler's structured report, when it wrote one.

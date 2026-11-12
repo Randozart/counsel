@@ -4,7 +4,7 @@
 //!
 //! This is the adoption test: without these macros a real crate cannot even
 //! compile a function carrying `#[pre]`, because rustc rejects unknown
-//! attributes. `counsel-static` still reads the source text — the macros only
+//! attributes. Counsel still reads the source text — the macros only
 //! make the syntax legal.
 
 use counsel_macros::{case, post, pre};

@@ -16,7 +16,7 @@ Rust source (what you write):
 fn double(a: i64) -> i64 { a + a }
 ```
 
-Generated Briev (what `counsel-static` emits for the prover):
+Generated Briev (what Counsel emits for the prover):
 
 ```briev
 defn double(a: Int) [a >= 0][term == a + a] -> Int {
@@ -180,7 +180,7 @@ Result — no compiler run, rejected during translation:
 
 ```rust
 Err(Error::Unsupported(
-    "unsupported expression (pure-integer subset): … — counsel-static verifies a \
+    "unsupported expression (pure-integer subset): … — Counsel verifies a \
      pure-integer subset: `i64` parameters and return, integer arithmetic, \
      comparisons, `let`, `if`/`else`, `return`, and a trailing expression"
 ))
@@ -194,7 +194,7 @@ about a function the prover cannot see.
 ## 6. From a test
 
 ```rust
-use counsel_static::{check_source, Outcome};
+use counsel::check::{check_source, Outcome};
 
 let report = check_source(r#"
     #[pre(a >= 0)]
@@ -204,15 +204,15 @@ let report = check_source(r#"
 
 assert_eq!(report.verdicts[0].outcome, Outcome::Proven);
 assert!(report.all_proven());
-# Ok::<(), counsel_static::Error>(())
+# Ok::<(), counsel::check::Error>(())
 ```
 
 Functions without `#[pre]`/`#[post]` are ignored, so a file can mix
 contracted and uncontracted code freely.
 
-**Integration note.** `counsel-static` reads source *text* and parses it with
-`syn`; it does not compile your crate, and `#[pre]`/`#[post]` are
-attributes this tool understands (there is no proc-macro yet). Call
+**Integration note.** Counsel reads source *text* and parses it with `syn`; it
+does not compile your crate. `#[pre]`/`#[post]`/`#[case]` are re-exported from
+`counsel` as inert attributes, so the same file compiles in your crate. Call
 `check_source`/`check_file` from a test, a build step, or CI.
 
 ---
@@ -288,7 +288,7 @@ printf 'defn scale(a: Int) [true][term == a * a] -> Int {\n    term a * 2;\n};\n
 ```bash
 # Through the crate's own API:
 cd counsel-crate
-BRIEVC=/path/to/brievc cargo test -p counsel-static   # translator + real prover
+BRIEVC=/path/to/brievc cargo test --features static   # translator + real prover
 BRIEVC=/path/to/brievc cargo test -p counsel          # builds + links Briev machinery
 ```
 

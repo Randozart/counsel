@@ -130,7 +130,7 @@ a function body has no trailing statement after fully-terminating guards.
 
 ### Workaround shipped
 
-`counsel-static` emits the else body **unguarded** when both arms terminate
+Counsel emits the else body **unguarded** when both arms terminate
 (reaching it implies the guard failed), which is both simpler and avoids the
 shape. When the then-arm can fall through, the inverted guard is kept.
 

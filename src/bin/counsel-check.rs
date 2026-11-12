@@ -8,7 +8,7 @@
 // Exit status: 0 when nothing is violated, 1 when a contract is falsified, 2
 // when the check could not run (bad usage, unparsable source, no usable brievc).
 
-use counsel_static::{Outcome, Report};
+use counsel::check::{Outcome, Report};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
     };
     let mut reports: Vec<(PathBuf, Report)> = Vec::new();
     for file in files {
-        match counsel_static::check_file(&file) {
+        match counsel::check::check_file(&file) {
             Ok(report) => reports.push((file, report)),
             Err(err) => {
                 eprintln!("error: {}: {err}", file.display());
@@ -53,7 +53,10 @@ fn main() -> ExitCode {
         Format::Json => print_json(&reports),
         Format::Human => print_human(&reports),
     }
-    if reports.iter().any(|(_, report)| !report.violated().is_empty()) {
+    if reports
+        .iter()
+        .any(|(_, report)| !report.violated().is_empty())
+    {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -71,7 +74,9 @@ fn parse_args() -> Result<(Format, PathBuf), String> {
                 Some("json") => Format::Json,
                 Some("human") => Format::Human,
                 Some(other) => {
-                    return Err(format!("unknown --format '{other}' (expected human or json)"))
+                    return Err(format!(
+                        "unknown --format '{other}' (expected human or json)"
+                    ))
                 }
                 None => return Err("--format requires a value".to_string()),
             };
@@ -79,9 +84,9 @@ fn parse_args() -> Result<(Format, PathBuf), String> {
         }
         target = Some(PathBuf::from(arg));
     }
-    target
-        .map(|path| (format, path))
-        .ok_or_else(|| "usage: counsel-check [--format human|json] <file.rs | directory>".to_string())
+    target.map(|path| (format, path)).ok_or_else(|| {
+        "usage: counsel-check [--format human|json] <file.rs | directory>".to_string()
+    })
 }
 
 /// The Rust files to check: the path itself, or every `.rs` beneath it.
