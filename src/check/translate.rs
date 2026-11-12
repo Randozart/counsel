@@ -874,3 +874,34 @@ mod case_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    /// M1: an unsigned parameter must carry the fact pinning it to its range.
+    #[test]
+    fn unsigned_parameter_carries_a_domain_fact() {
+        let file = syn::parse_file("#[post(term >= 0)]\nfn f(x: u32) -> u32 { x }\n")
+            .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(
+            out[0].briev.contains("x >= 0 && x <= 4294967295"),
+            "u32 fact missing: {}",
+            out[0].briev
+        );
+    }
+
+    /// M1: a full-width parameter needs no fact - the model already matches it.
+    #[test]
+    fn i64_parameter_adds_no_domain_fact() {
+        let file = syn::parse_file("#[post(term >= 0)]\nfn f(x: i64) -> i64 { x }\n")
+            .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(
+            !out[0].briev.contains("x >= 0 && x <="),
+            "i64 must add no fact: {}",
+            out[0].briev
+        );
+    }
+}
