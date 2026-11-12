@@ -13,6 +13,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Static and runtime pre/post-condition verification for Rust: the predicate core is authored in Briev and compiled to native, while contracts are discharged by Briev's own body prover. Lighter than Kani."
 license = "Apache-2.0 WITH LLVM-exception"
+repository = "https://github.com/Randozart/counsel"
+homepage = "https://github.com/Randozart/counsel"
+documentation = "https://docs.rs/counsel"
+readme = "README.md"
 keywords = ["verification", "contracts", "precondition", "postcondition", "briev"]
 categories = ["development-tools::testing", "compilers"]
 
