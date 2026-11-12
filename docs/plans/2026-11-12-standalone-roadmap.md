@@ -196,3 +196,28 @@ shows, and the acceptance test is the part that must not be skipped:
 
 That test would have caught all three cascade failures *and* the typing
 degradation; without it, "packaging" stays a hope rather than a check.
+
+### Correction — the typing failure is not independent of paths
+
+The handoff above says the `Int` → `Float` degradation is independent of the
+stdlib root. That was too strong, and the code says so:
+
+- `src/parser/types.rs` maps `"Int" => Type::int()`, so `-> Int` parses
+  correctly; the declared type cannot be Float on its own.
+- Re-reading test N: the package that included the **top-level `std/`** got
+  *past* typing entirely and failed later, at `cannot read 'std/c/coll_arena.c'`.
+
+So the Float came from a run with no prelude, not from a type-mapping bug. What
+`--stdlib-path` failed to supply was the top-level `std/` (the prelude,
+`std/core.bv`), which is a different root from the module library.
+
+**Revised resource set:** `lib/`, `config/`, `glue/`, `std/` — four roots, not
+one, which is precisely why the fix should collapse them into a single
+`current_exe`-derived root.
+
+**Revised remaining defect:** C-source resolution. `lib/std/c/coll_arena.c`
+exists, yet the packaged run asked for `std/c/coll_arena.c`, so the C path is
+built from a root that is *not* the resolved stdlib. Next probe: find where that
+path is constructed (grep for `std/c` rather than the filename — the earlier
+`coll_arena.c` grep in `src/` found nothing, so the path is assembled) and make
+it hang off the same single root.
