@@ -28,11 +28,11 @@ use std::process::Command;
 
 /// Pinned compiler release. Bumping it means regenerating `src/bindings.rs`
 /// and re-running the tests: the bindings and the compiler must agree.
-const RELEASE_TAG: &str = "v0.1.0";
+const RELEASE_TAG: &str = "v0.1.2";
 /// Release asset stem — the tarball contains `<stem>/bin` + `<stem>/share`.
 const ASSET_STEM: &str = "brievc-linux-x86_64";
 /// sha256 of that exact tarball; a mismatch aborts the build.
-const ASSET_SHA256: &str = "2e5d7e55b60ac45c29fb82fba36046e2fcfd2bfc4b78d87917ef14a0ba9bbe13";
+const ASSET_SHA256: &str = "fdaa19eeddcc33212eef33894c97f77551e41b5459ddc593ec2b52a7cb43194a";
 
 fn main() {
     // docs.rs builds offline and never links; the `extern "C"` block in
