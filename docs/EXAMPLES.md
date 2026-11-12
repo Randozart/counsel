@@ -291,3 +291,47 @@ cd counsel-crate
 BRIEVC=/path/to/brievc cargo test -p counsel-static   # translator + real prover
 BRIEVC=/path/to/brievc cargo test -p counsel          # builds + links Briev machinery
 ```
+
+---
+
+## 9. Intended cases (`#[case]`)
+
+`#[post]` says what must hold for *every* input. `#[case]` pins inputs you
+actually care about, so the prover can give a definite answer instead of
+`Unproven`:
+
+```rust
+#[pre(a >= 0)]
+#[post(term == 2 * a)]
+#[case(5)]
+fn double(a: i64) -> i64 { a + a }
+```
+
+The general goal is undecidable by structure here (`a + a` versus `2 * a`), so
+the translator also emits the contract instantiated at the case's input:
+
+```briev
+defn double__case0() [5 >= 0][term == 2 * 5] -> Int { term 5 + 5; };
+```
+
+which the prover collapses to constants and decides.
+
+| Verdict | Meaning |
+|---|---|
+| `Proven` | symbolic: every path satisfies `#[post]` |
+| `ProvenForCase` | satisfied **at that input only** — reported as `double (case 0)` |
+| `Violated` | a concrete counterexample exists |
+| `Unproven` | decidable body, undecided obligation |
+
+`Report::all_proven()` counts only symbolic `Proven`, so a case can never make a
+report green.
+
+Two deliberate refusals: a case whose arity does not match the parameters is a
+contract error, and a function that rebinds a parameter (`let a = 1;`) rejects
+cases outright — the substitution is textual, and guessing would be worse than
+refusing.
+
+Syntax notes: `#[case(5)]` for one parameter, `#[case((2, 3))]` for several.
+There is no `=> expected` form: an expectation that cannot be checked would be a
+silent weakness. The expectation comes from `#[post]`, which *is* proved at that
+input.
