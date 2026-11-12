@@ -369,6 +369,8 @@ fn translate_expr_stmt(
             out.push(translate_if(node)?);
             Ok(())
         }
+        // Loops are unrolled, never approximated: constant bounds only.
+        syn::Expr::ForLoop(for_loop) => translate_for(for_loop, out),
         // A trailing expression is the function's value.
         other if no_semi && is_last => {
             out.push(format!("term {};", translate_expr(other, true)?));
@@ -936,7 +938,9 @@ struct Summary {
 fn build_summaries(items: &[syn::Item]) -> std::collections::HashMap<String, Summary> {
     let mut sums = std::collections::HashMap::new();
     for item in items {
-        let syn::Item::Fn(item_fn) = item else { continue };
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
         if matches!(contract_attr(&item_fn.attrs, "pre"), Ok(Some(_))) {
             continue;
         }
@@ -1122,5 +1126,128 @@ mod call_tests {
         .expect("parse");
         let err = translate_file(&file).expect_err("preconditioned callee must stay unsupported");
         assert!(matches!(err, Error::Unsupported(_)), "{err}");
+    }
+}
+
+/// Largest constant loop that will be unrolled.
+const MAX_LOOP_UNROLL: i64 = 64;
+
+/// Translate a `for` loop by fully unrolling it.
+///
+/// Unrolling IS the literal semantics of a constant-bounded loop, so it stays
+/// sound: nothing is assumed about a trip count. Dynamic bounds are refused
+/// rather than approximated, because any summary of them would be a guess.
+fn translate_for(for_loop: &syn::ExprForLoop, out: &mut Vec<String>) -> Result<(), Error> {
+    let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
+        return Err(Error::Unsupported(
+            "`for` loops are supported only with a plain loop variable".to_string(),
+        ));
+    };
+    let syn::Expr::Range(range) = for_loop.expr.as_ref() else {
+        return Err(Error::Unsupported(
+            "`for` loops are supported only over `lo..hi` / `lo..=hi`".to_string(),
+        ));
+    };
+    let (Some(start), Some(end)) = (
+        range.start.as_deref().and_then(literal_int),
+        range.end.as_deref().and_then(literal_int),
+    ) else {
+        return Err(Error::Unsupported(
+            "`for` loop bounds must be integer literals: unrolling is the only sound model"
+                .to_string(),
+        ));
+    };
+    let end = match range.limits {
+        syn::RangeLimits::HalfOpen(_) => end,
+        syn::RangeLimits::Closed(_) => end + 1,
+    };
+    let count = end.saturating_sub(start);
+    if count > MAX_LOOP_UNROLL {
+        return Err(Error::Unsupported(format!(
+            "`for` loop of {count} iterations exceeds the unrolling limit ({MAX_LOOP_UNROLL})"
+        )));
+    }
+    if count <= 0 {
+        return Ok(());
+    }
+    let name = pat.ident.to_string();
+    for step in start..end {
+        let index: syn::Expr = syn::parse_str(&step.to_string())
+            .map_err(|_| Error::Unsupported("loop index literal".to_string()))?;
+        let mut body = for_loop.body.clone();
+        let mut swap = Substitute {
+            params: std::slice::from_ref(&name),
+            args: std::slice::from_ref(&index),
+        };
+        for stmt in &mut body.stmts {
+            syn::visit_mut::VisitMut::visit_stmt_mut(&mut swap, stmt);
+        }
+        let text = translate_block(&body.stmts)?;
+        if !text.trim().is_empty() {
+            out.push(text);
+        }
+    }
+    Ok(())
+}
+
+/// An integer literal, allowing a leading negation.
+fn literal_int(expr: &syn::Expr) -> Option<i64> {
+    match expr {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Int(int) => int.base10_parse().ok(),
+            _ => None,
+        },
+        syn::Expr::Unary(unary) => match unary.op {
+            syn::UnOp::Neg(_) => literal_int(&unary.expr).map(|value| -value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+
+    /// The loop arm is reached: constant bounds unroll, dynamic bounds refuse.
+    #[test]
+    fn dynamic_loop_bounds_are_refused_not_approximated() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\nfn f(a: i64) -> i64 { for i in 0..a { let t = i; } a }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("dynamic bounds must be refused");
+        let text = format!("{err}");
+        assert!(
+            text.contains("bounds must be integer literals"),
+            "expected the unroller's refusal, got: {text}"
+        );
+    }
+
+    /// A constant-bounded loop is expanded, leaving no `for` in the Briev text.
+    #[test]
+    fn constant_loop_is_unrolled() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\nfn f(a: i64) -> i64 { for i in 0..2 { let t = i; } a }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(
+            !out[0].briev.contains("for "),
+            "loop should be expanded: {}",
+            out[0].briev
+        );
+    }
+
+    /// Documents a real limit: loops are useless for accumulation until the
+    /// subset admits assignment, because `acc = acc + x` is not translated today.
+    #[test]
+    fn assignment_inside_a_loop_is_still_unsupported() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\nfn f() -> i64 { let mut acc = 0; for i in 0..2 { acc = acc + i; } acc }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("assignment is not in the subset yet");
+        assert!(format!("{err}").contains("unsupported"), "{err}");
     }
 }
