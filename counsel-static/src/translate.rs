@@ -787,10 +787,9 @@ mod case_tests {
     /// A body that rebinds a parameter makes textual substitution unsound.
     #[test]
     fn shadowed_parameter_is_refused() {
-        let err = translate(
-            "#[post(term >= 0)]\n#[case(5)]\nfn f(a: i64) -> i64 { let a = 1; a }\n",
-        )
-        .expect_err("shadowing must be refused");
+        let err =
+            translate("#[post(term >= 0)]\n#[case(5)]\nfn f(a: i64) -> i64 { let a = 1; a }\n")
+                .expect_err("shadowing must be refused");
         assert!(err.to_string().contains("rebinds"), "{err}");
     }
 

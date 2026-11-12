@@ -116,3 +116,28 @@ fn unsupported_constructs_are_rejected() {
         .expect_err("calls are outside the subset");
     assert!(err.to_string().contains("pure-integer subset"), "{err}");
 }
+
+/// A `#[case]` is proved end-to-end at its input, is reported under a readable
+/// name, and never counts as a general proof.
+#[test]
+fn case_is_proven_at_its_input() {
+    // The general goal is undecidable by structure (`a + a` vs `2 * a`), so the
+    // case is the only thing that can decide it — at a = 5.
+    let Some(report) = verify(
+        "#[pre(a >= 0)]\n#[post(term == 2 * a)]\n#[case(5)]\n\
+         fn double(a: i64) -> i64 { a + a }\n",
+    ) else {
+        return;
+    };
+    let case = report
+        .verdicts
+        .iter()
+        .find(|v| v.outcome == Outcome::ProvenForCase)
+        .unwrap_or_else(|| panic!("no ProvenForCase verdict: {:?}", report.verdicts));
+    assert_eq!(case.name, "double (case 0)");
+    assert!(
+        !report.all_proven(),
+        "a case must never make a report green: {:?}",
+        report.verdicts
+    );
+}

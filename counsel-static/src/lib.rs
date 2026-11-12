@@ -152,7 +152,7 @@ fn assemble(translated: &[TranslatedFn], discharge: &Discharge) -> Report {
         .map(|decl| {
             let outcome = classify(&decl.name, discharge);
             FnVerdict {
-                name: decl.name.clone(),
+                name: display_name(&decl.name),
                 outcome,
             }
         })
@@ -160,6 +160,17 @@ fn assemble(translated: &[TranslatedFn], discharge: &Discharge) -> Report {
     Report {
         verdicts,
         warnings: Vec::new(),
+    }
+}
+
+/// Readable name for a verdict: `<fn>__caseN` becomes `<fn> (case N)`.
+///
+/// The generated defn name keeps the case distinguishable while checking; the
+/// report should speak about the function the author wrote.
+fn display_name(name: &str) -> String {
+    match name.split_once("__case") {
+        Some((base, index)) => format!("{base} (case {index})"),
+        None => name.to_string(),
     }
 }
 
