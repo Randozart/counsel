@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# counsel-macros — the contract attributes rustc must accept.
+#
+# `counsel-static` verifies contracts by reading the *source text*, so it needs
+# no macro. But a real crate has to compile first, and rustc rejects unknown
+# attributes: these macros make `#[pre]`, `#[post]` and `#[case]` legal syntax.
+# Each expands to the item unchanged and contributes nothing at runtime.
+
+[package]
+name = "counsel-macros"
+version = "0.1.0"
+edition = "2021"
+description = "Contract attributes for Counsel (#[pre], #[post], #[case]). They expand to nothing; counsel-static reads the source text."
+license = "Apache-2.0 WITH LLVM-exception"
+keywords = ["contracts", "verification", "attributes", "counsel"]
+categories = ["development-tools::testing"]
+
+[lib]
+proc-macro = true

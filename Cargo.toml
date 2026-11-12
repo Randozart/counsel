@@ -23,5 +23,5 @@ categories = ["development-tools::testing", "compilers"]
 # pure-integer Rust subset into Briev defns and discharges them through
 # `brievc --verify-bodies` (landed in briev-lang c0ce60dc).
 [workspace]
-members = ["counsel-static"]
+members = ["counsel-static", "counsel-macros"]
 resolver = "2"
