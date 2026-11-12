@@ -53,6 +53,29 @@ discharging them through `brievc --verify-bodies`.
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
 
+## Install
+
+Three crates, three jobs:
+
+| Crate | Add it when | Needs `brievc` |
+|---|---|---|
+| `counsel-macros` | you want `#[pre]`/`#[post]`/`#[case]` to compile — proc-macro no-ops, so rustc accepts them | no |
+| `counsel-static` | you want contracts proved by Briev's prover | **yes, at check time** |
+| `counsel` | you want the Briev-authored runtime predicates linked in | **yes, at build time** |
+
+`counsel-static` finds the compiler via `BRIEVC`, then `brievc` on `PATH`, then a
+sibling `briev-lang` checkout. A prebuilt Linux binary is attached to each
+tagged GitHub release; otherwise build it from the compiler repository:
+
+```bash
+git clone https://github.com/Randozart/briev-lang
+cargo build --release --manifest-path briev-lang/Cargo.toml --bin brievc
+export BRIEVC=$PWD/briev-lang/target/release/brievc
+```
+
+`counsel` (the runtime half) invokes `brievc` from its build script, so it cannot
+be built without one — that is the remaining packaging gap.
+
 ## Quick start
 
 ```bash

@@ -84,3 +84,9 @@ jobs:
           # is the check that the compiler built above carries the point-bound
           # reasoning (briev-lang a2bbaba4).
           grep -qE '^pinned +proven$' cli.out
+          # Machine-readable output (T3): stable ids, one per verdict.
+          ./target/debug/counsel-check --format json counsel-static/tests/fixtures/contracts.rs > cli.json
+          grep -q '"outcome":"proven-for-case"' cli.json
+          grep -q '"outcome":"proven"' cli.json
+          # Directory scanning (T2) finds the same fixture.
+          ./target/debug/counsel-check counsel-static/tests/fixtures | grep -q "case only"

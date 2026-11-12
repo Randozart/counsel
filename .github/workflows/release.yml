@@ -1,0 +1,65 @@
+# Attach a prebuilt `brievc` to a tagged release.
+#
+# `counsel-static` needs the compiler at check time, and building it from source
+# is a several-minute detour for anyone trying the crate. Tagging `v*` publishes
+# a Linux x86_64 binary; other platforms build from source as the README says.
+#
+# This is the tractable half of C2 (packaging): publishing `briev-compiler` to
+# crates.io needs the owner's credentials, but a release asset does not.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  brievc:
+    name: build and attach brievc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # brievc shells out to clang/llc when compiling a .bv to native code.
+      - name: Compiler toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm
+
+      - name: Fetch briev-lang
+        uses: actions/checkout@v4
+        with:
+          repository: Randozart/briev-lang
+          path: .briev-lang
+
+      - name: Build brievc
+        run: cargo build --release --manifest-path .briev-lang/Cargo.toml --bin brievc
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp .briev-lang/target/release/brievc dist/brievc-linux-x86_64
+          strip dist/brievc-linux-x86_64 || true
+          # Fail the release if the binary cannot even describe itself.
+          dist/brievc-linux-x86_64 freshness || true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/brievc-linux-x86_64
+          body: |
+            Prebuilt `brievc` (Linux x86_64) for this tag.
+
+            ```bash
+            curl -L -o brievc \
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/brievc-linux-x86_64
+            chmod +x brievc
+            export BRIEVC=$PWD/brievc
+            ```
+
+            Other platforms: build from `Randozart/briev-lang` with
+            `cargo build --release --bin brievc`.

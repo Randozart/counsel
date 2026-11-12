@@ -1,14 +1,15 @@
 # Roadmap — Counsel as a standalone tool
 
 **Date:** 2026-11-12
-**Status:** active. Item 1 (C1) in progress.
+**Status:** items 1–3 done. C1 (`2b361ed2`, `3c41fe6`), C6+C5 (`860abe10`),
+T1 (`4574ca8`), T2+T3 (`088e631`). Next: C2 packaging; C3/C4 prover depth open.
 **Basis:** `2026-11-12-standalone-assessment.md` (readiness + debt inventory).
 
 Order follows the assessment: trust and interface first, then adoption, then depth.
 
 ---
 
-## Item 1 — C1: structured diagnostics from the compiler *(this session)*
+## Item 1 — C1: structured diagnostics ✅ done (`2b361ed2`, `3c41fe6`)
 
 **Problem.** `counsel-static` learns verdicts by parsing `brievc`'s stderr prose:
 
@@ -45,7 +46,7 @@ legacy and removable once a compiler with the flag is the floor.
   asserts the JSON path is taken when the compiler supports it.
 - briev-lang suite green; counsel suites green.
 
-## Item 2 — C6 + C5: trust and defaults
+## Item 2 — C6 + C5: trust and defaults ✅ done (`860abe10`)
 
 - **C6** `--verify-bodies` prints the compiler's identity (version/commit) and
   warns when `brievc freshness` would flag it, so a stale binary cannot quietly
@@ -53,7 +54,7 @@ legacy and removable once a compiler with the flag is the floor.
 - **C5** a strict profile (`--strict` or `.s`-profile) enables body verification
   by default, so new code gets contracts proved without knowing the flag.
 
-## Item 3 — T1/T2/T3: make it runnable by a stranger
+## Item 3 — T1/T2/T3: make it runnable by a stranger ✅ done (`4574ca8`, `088e631`)
 
 - **T1** proc-macro shim so `#[pre]`/`#[post]`/`#[case]` are accepted by rustc
   (no-op expansion; `counsel-static` still reads the source text).
