@@ -73,7 +73,9 @@ cargo test
 | `add` | `(a, b) -> i64` | verified integer sum | Briev `add` |
 | `positive` / `nonneg` / `in_range` | `(i64) -> bool` | check predicates | Briev `is_positive` / `is_nonneg` / `within` |
 | `contract` | `(pre, body, post, x) -> Verdict` | pre→body→post obligation check | each obligation truth from Briev |
-| `verify` | `(original, shadow, n, gen) -> Verdict` | cross-verification sampler | Briev `eq` on each output pair |
+| `run_checked` | `(pre, body, post, x) -> Verdict` | same check, C callbacks | **Briev `run_checked`** — ordering + short-circuit |
+| `verify_samples` | `(original, shadow, n) -> Verdict` | cross-verification sampler | **Briev `verify_samples`** — the whole loop |
+| `verify` | `(original, shadow, n, gen) -> Verdict` | sampler with a Rust input generator | Briev `eq` on each output pair |
 | `satisfies` / `check_op` | `(Op, i64)` | predicate-as-data, evaluated in Briev | Briev `eval_pred` |
 
 ## Examples

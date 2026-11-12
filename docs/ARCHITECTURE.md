@@ -45,15 +45,17 @@ in Rust.
 
 | Layer | Language | Lines | Where |
 |---|---|---:|---|
-| Predicates, equality, opcode dispatch | **Briev** | 114 | `bridge/counsel.bv` |
+| Predicates, equality, opcode dispatch | **Briev** | 167 | `bridge/counsel.bv` |
+| Obligation orchestration (`run_checked`) + sampler loop (`verify_samples`) | **Briev** | same file | `bridge/counsel.bv` |
 | Body prover (paths, bounds, tri-state verdicts) | Rust | 1,461 | `briev-lang/src/analysis/{verify_bodies,symbolic}.rs` |
 | Rust frontend, compiler discovery, report parsing | Rust | ~640 | `counsel-static/src/` |
-| Runtime orchestration + sampler loop | Rust | 253 | `src/lib.rs` |
+| Facade: callback marshalling + verdict mapping | Rust | 308 | `src/lib.rs` |
 
-The orchestration (pre → body → post, and the sampling loop) is *designed* to
-be Briev and will move there once Briev's cross-ABI callback ABI is fixed
-(§2.2, `BUGS.md`, and `docs/plans/2026-11-11-briev-share.md`). Until then the
-crate must not claim more Briev than it has.
+The orchestration and the sampling loop moved into Briev once the cross-ABI
+callback ABI was fixed — `briev-lang` 43519b01 (a host's flat C callback) and
+0ea0fe6e (forwarding a callback parameter, which the sampler's recursion
+needs). The Rust layer is marshalling only; see `BUGS.md` and
+`docs/plans/2026-11-11-briev-share.md`.
 
 ---
 
