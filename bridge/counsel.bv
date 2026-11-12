@@ -113,3 +113,27 @@ export defn eval_pred(op: Int, a: Int, b: Int, x: Int) -> Int {
     };
     term 0;
 };
+
+// run_checked — Briev-authored obligation orchestrator (Ambition A1).
+//
+// 2026-11-12: this returns to Briev now that the cross-ABI callback defect is
+// fixed (briev-lang 43519b01 — an exported defn adapts a host's flat C function
+// pointer into a closure slot through a generated trampoline). Previously the
+// orchestrator had to live in Rust because a host callback SIGSEGV'd.
+//
+// Consumes three host callbacks: `pre` (1 when the precondition holds), `f`
+// (the body under test), and `post` (1 when the postcondition holds over the
+// input and the body's result). Order and short-circuiting are authored here.
+//
+// Returns 0 when both obligations hold, 1 when `pre` fails, 2 when `post` fails.
+// Guarantees: 0 exactly when pre(x) == 1 and post(x, f(x)) == 1.
+export defn run_checked(pre: (Int) -> Int, f: (Int) -> Int, post: (Int, Int) -> Int, x: Int) -> Int {
+    when pre(x) != 1 {
+        term 1;
+    };
+    let ret: Int = f(x);
+    when post(x, ret) != 1 {
+        term 2;
+    };
+    term 0;
+};
