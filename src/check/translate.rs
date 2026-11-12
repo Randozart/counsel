@@ -96,17 +96,12 @@ fn translate_fn(
 ) -> Result<TranslatedFn, Error> {
     let name = item_fn.sig.ident.to_string();
     let (params, facts) = translate_params(&name, &item_fn.sig)?;
-    // P4 step (a): the invariant surface is recognised, and duplicates are
-    // rejected the same way repeated `#[pre]` slots are. Preservation checking
-    // (VC2) is not wired yet, so an invariant is refused precisely rather than
-    // silently ignored — a contract that is parsed but not checked would read as
-    // support that does not exist.
-    if contract_attr(&item_fn.attrs, "invariant")?.is_some() {
-        return Err(Error::Unsupported(format!(
-            "`{name}`: `#[invariant(...)]` is recognised but loop preservation \
-             checking is not implemented yet — use constant loop bounds, or verify \
-             the loop's caller instead"
-        )));
+    // P4 step (b): the invariant turns the loop into a straight-line
+    // preservation obligation. Briev evaluates `[pre]` in the entry state and
+    // `[post]` in the FINAL state, so `[I && i < hi][I]` is preservation itself —
+    // no induction, no new prover machinery.
+    if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
+        return translate_preservation(&name, &params, &invariant, item_fn);
     }
     let post = post.unwrap_or_else(|| "true".to_string());
     // Each narrower or unsigned parameter contributes a domain fact. Everything
@@ -1347,10 +1342,18 @@ mod invariant_tests {
             "#[post(term >= 0)]\n#[invariant(acc >= 0)]\nfn f(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + i; } acc }\n",
         )
         .expect("parse");
-        let err = translate_file(&file).expect_err("preservation is not wired yet");
-        let text = format!("{err}");
-        assert!(text.contains("preservation"), "{text}");
-        assert!(text.contains("not implemented yet"), "{text}");
+        let (out, _warnings) = translate_file(&file).expect("preservation is emitted");
+        assert_eq!(
+            out[0].name, "f_preserve",
+            "the obligation is named for what it actually checks"
+        );
+        assert!(
+            out[0]
+                .briev
+                .contains("[acc >= 0 && i >= (0) && i < (n)][acc >= 0]"),
+            "expected the preservation contract, got: {}",
+            out[0].briev
+        );
     }
 
     /// A repeated invariant is rejected, like a repeated `#[pre]` slot.
@@ -1363,4 +1366,89 @@ mod invariant_tests {
         let err = translate_file(&file).expect_err("duplicate slots must be rejected");
         assert!(format!("{err}").contains("more than one"), "{err}");
     }
+}
+
+/// Emit the preservation obligation for an invariant-carrying loop (VC2).
+///
+/// The defn's precondition is `I && i < hi` in the entry state and its
+/// postcondition is `I` in the final state, which is exactly "the body preserves
+/// the invariant". Briev evaluates the two in different states, so this needs no
+/// induction and no prover change.
+fn translate_preservation(
+    name: &str,
+    params: &str,
+    invariant: &str,
+    item_fn: &syn::ItemFn,
+) -> Result<TranslatedFn, Error> {
+    let mut var = None;
+    let mut body: &[syn::Stmt] = &[];
+    let mut bound = None;
+    let mut lower = None;
+    for stmt in &item_fn.block.stmts {
+        let syn::Stmt::Expr(syn::Expr::ForLoop(for_loop), _) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
+            continue;
+        };
+        let syn::Expr::Range(range) = for_loop.expr.as_ref() else {
+            continue;
+        };
+        let Some(end) = range.end.as_deref() else {
+            continue;
+        };
+        let Some(start) = range.start.as_deref() else {
+            continue;
+        };
+        var = Some(pat.ident.to_string());
+        body = for_loop.body.stmts.as_slice();
+        bound = Some(translate_expr(end, true)?);
+        lower = Some(translate_expr(start, true)?);
+        break;
+    }
+    let (Some(var), Some(bound), Some(lower)) = (var, bound, lower) else {
+        return Err(Error::Unsupported(format!(
+            "`{name}`: `#[invariant(...)]` needs a `for` loop over `lo..hi` to apply to"
+        )));
+    };
+    let mut parts: Vec<String> = if params.trim().is_empty() {
+        Vec::new()
+    } else {
+        params.split(", ").map(str::to_string).collect()
+    };
+    // Every local the loop writes must be carried in, or the invariant would be
+    // under-specified and preservation would prove nothing.
+    for local in assigned_names(body) {
+        if !parts.iter().any(|part| part.starts_with(&format!("{local}:"))) {
+            parts.push(format!("{local}: Int"));
+        }
+    }
+    parts.push(format!("{var}: Int"));
+    let body_text = translate_block(body)?;
+    let briev = format!(
+        "defn {name}_preserve({}) [{invariant} && {var} >= ({lower}) && {var} < ({bound})][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n",
+        parts.join(", ")
+    );
+    Ok(TranslatedFn {
+        name: format!("{name}_preserve"),
+        briev,
+    })
+}
+
+/// Names assigned by a statement list (one level deep).
+fn assigned_names(stmts: &[syn::Stmt]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for stmt in stmts {
+        if let syn::Stmt::Expr(syn::Expr::Assign(assign), _) = stmt {
+            if let syn::Expr::Path(path) = assign.left.as_ref() {
+                if let Some(ident) = path.path.get_ident() {
+                    let name = ident.to_string();
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
