@@ -94,17 +94,25 @@ fn run_discharge(
     let source = workdir.join("counsel_static.bv");
     let pool: String = defns.iter().map(|d| d.briev.as_str()).collect();
     std::fs::write(&source, pool).map_err(|e| Error::Io(format!("{}: {e}", source.display())))?;
+    // Ask for the structured report beside the build output (C1).
+    let report_path = workdir.join("verify-report.json");
     let output = Command::new(compiler)
         .arg("build")
         .arg(&source)
         .arg("--library")
         .arg(FLAG)
+        .arg("--verify-report")
+        .arg(&report_path)
         .arg("--out")
         .arg(workdir.join("out"))
         .output()
         .map_err(|e| Error::Io(format!("failed to run brievc: {e}")))?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let mut discharge = parse_report(&stderr);
+    // Prefer the structured report: the human diagnostics are prose, and a
+    // rewording would silently turn a violation into "proven". A compiler that
+    // predates --verify-report writes no file, so text parsing stays as the
+    // fallback for older toolchains.
+    let mut discharge = read_report(&report_path).unwrap_or_else(|| parse_report(&stderr));
     if !output.status.success() && discharge.violated.is_empty() {
         // A compiler-side failure (parse/type error, or a prover crash) is not
         // a contract verdict — surface it rather than inventing an outcome.
@@ -177,4 +185,62 @@ fn temp_workdir() -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("counsel-static-{}-{nanos}", std::process::id()))
+}
+
+/// Read the compiler's structured report, when it wrote one.
+///
+/// Shape: `{ "proven": <count>, "unproven": [{name, reason}], "violated": [...] }`.
+/// Returns `None` when the file is absent — a compiler predating
+/// `--verify-report` — or unreadable, so the caller can fall back to the human
+/// diagnostics. Only names are taken: reasons are for humans, and the caller
+/// already knows which declarations it asked about.
+fn read_report(path: &Path) -> Option<Discharge> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(Discharge {
+        proven: Vec::new(),
+        unproven: report_names(&value, "unproven"),
+        violated: report_names(&value, "violated"),
+    })
+}
+
+/// The `name` fields of one finding array in the report.
+fn report_names(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(|entry| entry.as_array())
+        .map(|findings| {
+            findings
+                .iter()
+                .filter_map(|finding| finding.get("name").and_then(|name| name.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The structured report is the primary source of verdicts.
+    #[test]
+    fn reads_structured_report() {
+        let path = std::env::temp_dir().join(format!("counsel-report-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"proven":1,"unproven":[{"name":"scale","reason":"x"}],"violated":[{"name":"lies","reason":"y"}]}"#,
+        )
+        .expect("write report");
+        let discharge = read_report(&path).expect("report parsed");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(discharge.violated, vec!["lies".to_string()]);
+        assert_eq!(discharge.unproven, vec!["scale".to_string()]);
+    }
+
+    /// A missing report means an older compiler: fall back to the text path.
+    #[test]
+    fn missing_report_is_none() {
+        assert!(read_report(Path::new("/nonexistent/verify-report.json")).is_none());
+    }
 }
