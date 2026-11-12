@@ -73,8 +73,12 @@ jobs:
       - name: CLI smoke test
         run: |
           cargo build -p counsel-static --bin counsel-check
-          # The fixture has one advisory goal and one case: exit 0, and the
-          # case line must be labelled as case-only.
           ./target/debug/counsel-check counsel-static/tests/fixtures/contracts.rs | tee cli.out
-          grep -q "case only" cli.out
-          grep -q "advisory" cli.out
+          # Every verdict shape the crate can produce, asserted explicitly:
+          grep -q "case only" cli.out    # a #[case] proves one input only
+          grep -q "advisory" cli.out     # a range-bounded goal stays undecided
+          grep -q "sign .*proven" cli.out # a bound alone can decide a goal
+          # A point-pinned precondition must decide arithmetic with no case:
+          # this is the check that the compiler built above carries the
+          # point-bound reasoning (briev-lang a2bbaba4).
+          grep -q "pinned .*proven" cli.out

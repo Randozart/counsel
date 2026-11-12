@@ -19,3 +19,12 @@ fn double(a: i64) -> i64 {
 fn sign(a: i64) -> i64 {
     a
 }
+
+// Pinning the input makes the goal decidable on its own — no `#[case]` needed.
+// This line is the CI check that the compiler's point-bound reasoning is
+// present in the binary it built.
+#[pre(a == 5)]
+#[post(term == 2 * a)]
+fn pinned(a: i64) -> i64 {
+    a + a
+}
