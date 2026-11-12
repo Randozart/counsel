@@ -1241,16 +1241,22 @@ mod loop_tests {
         );
     }
 
-    /// Documents a real limit: loops are useless for accumulation until the
-    /// subset admits assignment, because `acc = acc + x` is not translated today.
+    /// Loop + accumulator now translates. This test previously asserted the
+    /// opposite: unrolling alone was inert because assignment was outside the
+    /// subset, so an expanded loop could not accumulate. Adding rebinding
+    /// closed that gap, and the assertion flipped with it.
     #[test]
-    fn assignment_inside_a_loop_is_still_unsupported() {
+    fn assignment_inside_a_loop_translates() {
         let file = syn::parse_file(
-            "#[post(term >= 0)]\nfn f() -> i64 { let mut acc = 0; for i in 0..2 { acc = acc + i; } acc }\n",
+            "#[post(term == 1)]\nfn f() -> i64 { let mut acc = 0; for i in 0..2 { acc = acc + i; } acc }\n",
         )
         .expect("parse");
-        let err = translate_file(&file).expect_err("assignment is not in the subset yet");
-        assert!(format!("{err}").contains("unsupported"), "{err}");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(
+            out[0].briev.contains("acc = acc + 0") && out[0].briev.contains("acc = acc + 1"),
+            "expected both unrolled rebindings, got: {}",
+            out[0].briev
+        );
     }
 }
 
