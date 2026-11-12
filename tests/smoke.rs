@@ -6,6 +6,10 @@
 // library, links it, and these tests drive the Briev-authored exports through
 // the safe facade. If this passes, the scaffold spike's exit criteria are met.
 
+// The tests below exercise the deprecated closure sampler on purpose: it is
+// still the only form that accepts a generator.
+#![allow(deprecated)]
+
 use counsel::{
     add, check_op, contract, eq, in_range, nonneg, positive, run_checked, satisfies, verify,
     verify_samples, within, Op, Verdict,

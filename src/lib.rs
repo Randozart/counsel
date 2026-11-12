@@ -288,6 +288,10 @@ pub fn check_op(op: Op, x: i64) -> Verdict {
 /// let bad = verify(|x| x * 2, |x| x * 2 + 1, 5, |i| i as i64);
 /// assert_eq!(bad, Verdict::Fail("sample 0 diverged on input 0: expected 1, got 0".into()));
 /// ```
+#[deprecated(
+    note = "prefer `verify_samples`: its sampling loop is authored in Briev. \
+            This form keeps a Rust loop for generator-driven inputs."
+)]
 pub fn verify(
     original: impl Fn(i64) -> i64,
     shadow: impl Fn(i64) -> i64,

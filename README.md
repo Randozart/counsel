@@ -75,7 +75,7 @@ cargo test
 | `contract` | `(pre, body, post, x) -> Verdict` | pre→body→post obligation check | each obligation truth from Briev |
 | `run_checked` | `(pre, body, post, x) -> Verdict` | same check, C callbacks | **Briev `run_checked`** — ordering + short-circuit |
 | `verify_samples` | `(original, shadow, n) -> Verdict` | cross-verification sampler | **Briev `verify_samples`** — the whole loop |
-| `verify` | `(original, shadow, n, gen) -> Verdict` | sampler with a Rust input generator | Briev `eq` on each output pair |
+| `verify` | `(original, shadow, n, gen) -> Verdict` | sampler with a Rust input generator — deprecated, prefer verify_samples | Briev `eq` on each output pair |
 | `satisfies` / `check_op` | `(Op, i64)` | predicate-as-data, evaluated in Briev | Briev `eval_pred` |
 
 ## Examples
