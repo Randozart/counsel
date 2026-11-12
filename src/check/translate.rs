@@ -48,7 +48,7 @@ pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String
         }
         let translated = translate_fn(item_fn, pre, post)?;
         let name = translated.name.clone();
-        let params_text = translate_params(&name, &item_fn.sig)?;
+        let (params_text, _facts) = translate_params(&name, &item_fn.sig)?;
         let params: Vec<String> = item_fn
             .sig
             .inputs
@@ -89,9 +89,23 @@ fn translate_fn(
     post: Option<String>,
 ) -> Result<TranslatedFn, Error> {
     let name = item_fn.sig.ident.to_string();
-    let params = translate_params(&name, &item_fn.sig)?;
-    let pre = pre.unwrap_or_else(|| "true".to_string());
+    let (params, facts) = translate_params(&name, &item_fn.sig)?;
     let post = post.unwrap_or_else(|| "true".to_string());
+    // Each narrower or unsigned parameter contributes a domain fact. Everything
+    // crosses into Briev as one `Int`, so without these the prover would happily
+    // consider values the Rust type forbids. A fact-free signature keeps the
+    // author's precondition byte-for-byte: adding parentheses only matters when
+    // facts are concatenated with `&&`.
+    let pre = if facts.is_empty() {
+        pre.unwrap_or_else(|| "true".to_string())
+    } else {
+        let mut pre_parts = Vec::new();
+        if let Some(explicit) = pre.filter(|written| written != "true") {
+            pre_parts.push(format!("({explicit})"));
+        }
+        pre_parts.extend(facts);
+        pre_parts.join(" && ")
+    };
     let body = translate_block(&item_fn.block.stmts)?;
     if body.trim().is_empty() {
         return Err(Error::Unsupported(format!(
@@ -102,44 +116,100 @@ fn translate_fn(
     Ok(TranslatedFn { name, briev })
 }
 
-/// Translate the parameter list, requiring plain `i64` parameters.
-fn translate_params(name: &str, sig: &syn::Signature) -> Result<String, Error> {
+/// The integer width a boundary type names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntWidth {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    Isize,
+}
+
+/// Translate the parameter list, admitting every integer width Counsel models.
+///
+/// Returns the Briev parameter list plus the domain facts each parameter
+/// contributes. Those facts are what make the single-`Int` model sound: the
+/// parameter is carried as an `Int`, and the fact pins it to the range the Rust
+/// type actually allows.
+fn translate_params(name: &str, sig: &syn::Signature) -> Result<(String, Vec<String>), Error> {
     let mut params = Vec::new();
+    let mut facts = Vec::new();
     for input in &sig.inputs {
         let syn::FnArg::Typed(pat_ty) = input else {
             return Err(Error::Unsupported(format!(
                 "`{name}`: methods with `self` are not supported"
             )));
         };
-        require_i64(name, "parameter", &pat_ty.ty)?;
+        let width = integer_width(name, "parameter", &pat_ty.ty)?;
         let syn::Pat::Ident(pat_ident) = pat_ty.pat.as_ref() else {
             return Err(Error::Unsupported(format!(
                 "`{name}`: only plain identifier parameters are supported"
             )));
         };
-        params.push(format!("{}: Int", pat_ident.ident));
+        let ident = pat_ident.ident.to_string();
+        if let Some(fact) = domain_fact(&ident, width) {
+            facts.push(fact);
+        }
+        params.push(format!("{ident}: Int"));
     }
     if let syn::ReturnType::Type(_, ty) = &sig.output {
-        require_i64(name, "return type", ty)?;
+        integer_width(name, "return type", ty)?;
     }
-    Ok(params.join(", "))
+    Ok((params.join(", "), facts))
 }
 
-/// Reject any type other than `i64` at the boundary.
-fn require_i64(name: &str, what: &str, ty: &syn::Type) -> Result<(), Error> {
+/// The integer width at a boundary, or a rejection naming what is accepted.
+fn integer_width(name: &str, what: &str, ty: &syn::Type) -> Result<IntWidth, Error> {
     let syn::Type::Path(path) = ty else {
-        return Err(Error::Unsupported(format!(
-            "`{name}`: {what} must be `i64`"
-        )));
+        return Err(not_integer(name, what));
     };
-    let last = path.path.segments.last();
-    if last.is_some_and(|s| s.ident == "i64") {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(format!(
-            "`{name}`: {what} must be `i64` (the pure-integer subset)"
-        )))
-    }
+    let Some(last) = path.path.segments.last() else {
+        return Err(not_integer(name, what));
+    };
+    Ok(match last.ident.to_string().as_str() {
+        "i8" => IntWidth::I8,
+        "i16" => IntWidth::I16,
+        "i32" => IntWidth::I32,
+        "i64" => IntWidth::I64,
+        "u8" => IntWidth::U8,
+        "u16" => IntWidth::U16,
+        "u32" => IntWidth::U32,
+        "u64" => IntWidth::U64,
+        "usize" => IntWidth::Usize,
+        "isize" => IntWidth::Isize,
+        _ => return Err(not_integer(name, what)),
+    })
+}
+
+/// The rejection for a non-integer boundary type.
+fn not_integer(name: &str, what: &str) -> Error {
+    Error::Unsupported(format!(
+        "`{name}`: {what} must be an integer type (i8/i16/i32/i64, u8/u16/u32/u64, \
+         usize/isize) — Counsel models integers as `Int`"
+    ))
+}
+
+/// The range fact a parameter contributes, when its type is narrower than `Int`.
+fn domain_fact(ident: &str, width: IntWidth) -> Option<String> {
+    Some(match width {
+        // Full-width signed types are already exactly the model.
+        IntWidth::I64 | IntWidth::Isize => return None,
+        IntWidth::I32 => format!("{ident} >= -2147483648 && {ident} <= 2147483647"),
+        IntWidth::I16 => format!("{ident} >= -32768 && {ident} <= 32767"),
+        IntWidth::I8 => format!("{ident} >= -128 && {ident} <= 127"),
+        IntWidth::U8 => format!("{ident} >= 0 && {ident} <= 255"),
+        IntWidth::U16 => format!("{ident} >= 0 && {ident} <= 65535"),
+        IntWidth::U32 => format!("{ident} >= 0 && {ident} <= 4294967295"),
+        // The type's own range exceeds `Int`. The model therefore covers the
+        // non-negative `Int` range only — stated here rather than implied.
+        IntWidth::U64 | IntWidth::Usize => format!("{ident} >= 0"),
+    })
 }
 
 /// Read an attribute's single expression argument, e.g. `#[pre(a >= 0)]`.
