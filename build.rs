@@ -51,6 +51,17 @@ fn main() {
 
     build_machinery(&brievc, &bridge, &lib_out);
 
+    // Bake the resolved compiler into the crate so the static half finds the
+    // same one at check time. A crates.io consumer usually has no `brievc` on
+    // PATH, and its own manifest directory is inside the registry cache — so
+    // without this the checker reports NoCompiler even though the build just
+    // fetched a perfectly good compiler.
+    println!("cargo:rustc-env=COUNSEL_BRIEVC_PATH={}", brievc.display());
+    println!(
+        "cargo:rustc-env=COUNSEL_BRIEVC_CACHE_BIN={}",
+        install_dir().join("bin").join("brievc").display()
+    );
+
     // Link the produced static library; rebuild when the machinery changes.
     println!("cargo:rustc-link-search=native={}", lib_out.display());
     println!("cargo:rustc-link-lib=counsel");

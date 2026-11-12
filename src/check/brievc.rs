@@ -38,7 +38,19 @@ pub fn find_compiler() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("BRIEVC") {
         candidates.push(PathBuf::from(explicit));
     }
+    // The compiler this crate was built with. For a crates.io consumer that is
+    // the one `build.rs` fetched, so the static half works with no setup at
+    // all; without it the checker reports NoCompiler on a machine where the
+    // build had already downloaded a perfectly good compiler.
+    if let Some(baked) = option_env!("COUNSEL_BRIEVC_PATH") {
+        candidates.push(PathBuf::from(baked));
+    }
     candidates.push(PathBuf::from("brievc"));
+    // The shared cache: still useful when the baked path was cleaned up but the
+    // downloaded toolchain is intact.
+    if let Some(cached) = option_env!("COUNSEL_BRIEVC_CACHE_BIN") {
+        candidates.push(PathBuf::from(cached));
+    }
     candidates.extend(sibling_builds());
     candidates
         .into_iter()
@@ -135,6 +147,11 @@ fn invoke(
     if let Some(report) = report {
         command.arg("--verify-report").arg(report);
     }
+    // Run from the scratch workdir, which holds only the translated `.bv`.
+    // brievc's freshness guard scans `src/` + `config/` and, in released
+    // binaries (<= v0.1.0), exits when they look newer than the binary — from a
+    // consumer's project directory that aborted the check before it started.
+    command.current_dir(workdir);
     command
         .arg("--out")
         .arg(workdir.join("out"))
