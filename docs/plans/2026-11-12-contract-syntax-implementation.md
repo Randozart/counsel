@@ -67,3 +67,36 @@ rewritten by a case substituting `a`).
 
 Breaking for any existing user — mitigated by the fact that the crate is 0.1.0,
 no proc-macro is shipped, and the old names now warn with the replacement.
+
+---
+
+## Step 2 — delivered (2026-11-12), with one deliberate deviation
+
+**Shipped syntax:** `#[case(5)]` and `#[case((2, 3))]` — concrete *inputs* only.
+
+**Not shipped:** the `=> expected` right-hand side. Reason: honouring it requires
+evaluating the body at those inputs, which the static path does not do. Shipping
+an `expected` value that is parsed but never checked would be exactly the
+silent weakness this crate exists to avoid — a case that "passes" while its
+stated expectation was never compared. The expectation is therefore taken from
+the function's own `#[post]`, which *is* proved at that input, and there is no
+second place to get it wrong.
+
+If `=> expected` is wanted later, it becomes a cross-check with real meaning
+once the body can be evaluated (or by emitting a second concrete goal
+`[term == <expected>]`, which the prover already decides).
+
+**Mechanism as built**
+
+- `case_values_for` reads every `#[case(...)]`, requiring one literal per
+  parameter (wrong arity is `Error::Contract`).
+- `instantiate_case` re-emits the already-translated defn as `() -> Int` with
+  parameter identifiers substituted in *both* the contract and the body
+  (`defn double__case0() [5 >= 0][term == 5 + 5] -> Int { term 5 + 5; };`).
+- Substitution is textual, so `instantiate_case` **refuses** a function whose
+  body rebinds a parameter (`let a = ...`) rather than mis-substituting.
+- `Outcome::ProvenForCase` marks a case verdict; `Report::all_proven()` counts
+  symbolic `Proven` only, so cases can never turn the report green.
+
+**Tests:** 4 new unit tests (substituted emission, multi-arg left-to-right
+mapping, shadowing refused, arity refused); suite 21 unit + 8 integration green.

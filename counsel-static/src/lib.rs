@@ -78,6 +78,9 @@ pub enum Outcome {
     Unproven,
     /// A concrete counterexample exists — the contract is false.
     Violated,
+    /// The contract holds at a `#[case]` input only. **Not** a general proof:
+    /// `Report::all_proven` deliberately does not count it.
+    ProvenForCase,
 }
 
 /// One verified declaration.
@@ -167,6 +170,10 @@ fn classify(name: &str, discharge: &Discharge) -> Outcome {
     }
     if discharge.unproven.iter().any(|n| n == name) {
         return Outcome::Unproven;
+    }
+    // A case defn is named `<fn>__caseN` and proves one concrete input only.
+    if name.contains("__case") {
+        return Outcome::ProvenForCase;
     }
     Outcome::Proven
 }

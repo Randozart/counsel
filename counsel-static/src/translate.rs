@@ -46,7 +46,38 @@ pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String
         if pre.is_none() && post.is_none() {
             continue;
         }
-        out.push(translate_fn(item_fn, pre, post)?);
+        let translated = translate_fn(item_fn, pre, post)?;
+        let name = translated.name.clone();
+        let params_text = translate_params(&name, &item_fn.sig)?;
+        let params: Vec<String> = item_fn
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|arg| match arg {
+                syn::FnArg::Typed(pat_ty) => match pat_ty.pat.as_ref() {
+                    syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+                    _ => None,
+                },
+                syn::FnArg::Receiver(_) => None,
+            })
+            .collect();
+        // `#[case(...)]` instantiates the same contract at concrete inputs: a
+        // parameterless defn the prover can decide outright, instead of leaving
+        // the general goal `Unproven`.
+        let cases = case_values_for(&item_fn.attrs, params.len(), &name)?;
+        let mut case_defns = Vec::with_capacity(cases.len());
+        for (index, values) in cases.iter().enumerate() {
+            case_defns.push(instantiate_case(
+                &translated,
+                &name,
+                &params_text,
+                &params,
+                index,
+                values,
+            )?);
+        }
+        out.push(translated);
+        out.extend(case_defns);
     }
     Ok((out, warnings))
 }
@@ -592,5 +623,185 @@ mod contract_attribute_tests {
         let (_, warnings) =
             translate("#[inline(always)]\n#[test]\n#[pre(a > 0)]\nfn f(a: i64) -> i64 { a }\n");
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+}
+
+/// Read every `#[case(...)]`, requiring one literal per parameter.
+///
+/// The attribute carries concrete *inputs* only; the expectation comes from the
+/// function's own `#[post]`, so there is no second place to get it wrong.
+fn case_values_for(
+    attrs: &[syn::Attribute],
+    param_count: usize,
+    name: &str,
+) -> Result<Vec<Vec<String>>, Error> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("case") {
+            continue;
+        }
+        let expr: syn::Expr = attr
+            .parse_args()
+            .map_err(|e| Error::Parse(format!("`#[case(...)]`: {e}")))?;
+        let values = case_literals(&expr)?;
+        if values.len() != param_count {
+            return Err(Error::Contract(format!(
+                "`#[case(...)]` on `{name}` supplies {} value(s) but the function takes {param_count}",
+                values.len()
+            )));
+        }
+        out.push(values);
+    }
+    Ok(out)
+}
+
+/// Flatten one case's values: `#[case(5)]` or `#[case((2, 3))]`.
+fn case_literals(expr: &syn::Expr) -> Result<Vec<String>, Error> {
+    match expr {
+        syn::Expr::Tuple(tuple) => tuple.elems.iter().map(case_literal).collect(),
+        other => Ok(vec![case_literal(other)?]),
+    }
+}
+
+/// A case value must be an integer literal, optionally negated.
+fn case_literal(expr: &syn::Expr) -> Result<String, Error> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(int),
+            ..
+        }) => Ok(int.base10_digits().to_string()),
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => Ok(format!("-{}", case_literal(expr)?)),
+        _ => Err(Error::Contract(
+            "`#[case(...)]` values must be integer literals".to_string(),
+        )),
+    }
+}
+
+/// Materialise one case as a parameterless Briev defn.
+///
+/// Substitution is textual, so a body that rebinds a parameter (`let a = ...`)
+/// is rejected rather than silently mis-substituted.
+fn instantiate_case(
+    base: &TranslatedFn,
+    name: &str,
+    params_text: &str,
+    params: &[String],
+    index: usize,
+    values: &[String],
+) -> Result<TranslatedFn, Error> {
+    for param in params {
+        if base.briev.contains(&format!("let {param}: Int")) {
+            return Err(Error::Contract(format!(
+                "`#[case(...)]` on `{name}` cannot be applied: the body rebinds `{param}`"
+            )));
+        }
+    }
+    let case_name = format!("{name}__case{index}");
+    let renamed = base.briev.replacen(
+        &format!("defn {name}({params_text})"),
+        &format!("defn {case_name}()"),
+        1,
+    );
+    if renamed == base.briev {
+        return Err(Error::Contract(format!(
+            "`#[case(...)]` on `{name}`: could not rewrite the emitted signature"
+        )));
+    }
+    Ok(TranslatedFn {
+        name: case_name,
+        briev: substitute_identifiers(&renamed, params, values),
+    })
+}
+
+/// Replace whole identifiers in emitted Briev text.
+fn substitute_identifiers(text: &str, names: &[String], values: &[String]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            current.push(ch);
+            continue;
+        }
+        flush_identifier(&mut out, &current, names, values);
+        current.clear();
+        out.push(ch);
+    }
+    flush_identifier(&mut out, &current, names, values);
+    out
+}
+
+/// Emit one identifier, substituting it when it names a case parameter.
+fn flush_identifier(out: &mut String, ident: &str, names: &[String], values: &[String]) {
+    if ident.is_empty() {
+        return;
+    }
+    match names.iter().position(|name| name == ident) {
+        Some(pos) => out.push_str(&values[pos]),
+        None => out.push_str(ident),
+    }
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::*;
+
+    /// Parse and translate, discarding the advisory warnings.
+    fn translate(source: &str) -> Result<Vec<TranslatedFn>, Error> {
+        let file = syn::parse_file(source).expect("parse rust");
+        translate_file(&file).map(|(out, _)| out)
+    }
+
+    /// A case emits a parameterless, fully substituted defn next to the goal.
+    #[test]
+    fn case_emits_a_substituted_defn() {
+        let out = translate(
+            "#[pre(a >= 0)]\n#[post(term == a + a)]\n#[case(5)]\nfn double(a: i64) -> i64 { a + a }\n",
+        )
+        .expect("translate");
+        assert_eq!(out.len(), 2, "general goal + one case");
+        assert_eq!(out[0].name, "double");
+        assert_eq!(out[1].name, "double__case0");
+        assert!(
+            out[1].briev.contains("defn double__case0()"),
+            "{}",
+            out[1].briev
+        );
+        assert!(out[1].briev.contains("term 5 + 5"), "{}", out[1].briev);
+        assert!(!out[1].briev.contains("(a: Int)"), "{}", out[1].briev);
+    }
+
+    /// Several values map left-to-right; multi-argument cases use a tuple.
+    #[test]
+    fn multi_argument_case_maps_left_to_right() {
+        let out = translate(
+            "#[post(term == a + b)]\n#[case((2, 3))]\nfn add(a: i64, b: i64) -> i64 { a + b }\n",
+        )
+        .expect("translate");
+        assert!(out[1].briev.contains("term 2 + 3"), "{}", out[1].briev);
+    }
+
+    /// A body that rebinds a parameter makes textual substitution unsound.
+    #[test]
+    fn shadowed_parameter_is_refused() {
+        let err = translate(
+            "#[post(term >= 0)]\n#[case(5)]\nfn f(a: i64) -> i64 { let a = 1; a }\n",
+        )
+        .expect_err("shadowing must be refused");
+        assert!(err.to_string().contains("rebinds"), "{err}");
+    }
+
+    /// Wrong arity is a contract error, never a silent skip.
+    #[test]
+    fn wrong_arity_is_rejected() {
+        let err = translate("#[post(term == a)]\n#[case((1, 2))]\nfn f(a: i64) -> i64 { a }\n")
+            .expect_err("arity mismatch must be refused");
+        assert!(
+            err.to_string().contains("value(s) but the function takes"),
+            "{err}"
+        );
     }
 }
