@@ -371,6 +371,8 @@ fn translate_expr_stmt(
         }
         // Loops are unrolled, never approximated: constant bounds only.
         syn::Expr::ForLoop(for_loop) => translate_for(for_loop, out),
+        // Plain rebinding: `x = expr;` — the accumulator a loop needs.
+        syn::Expr::Assign(assign) => translate_assign(assign, out),
         // A trailing expression is the function's value.
         other if no_semi && is_last => {
             out.push(format!("term {};", translate_expr(other, true)?));
@@ -1249,5 +1251,64 @@ mod loop_tests {
         .expect("parse");
         let err = translate_file(&file).expect_err("assignment is not in the subset yet");
         assert!(format!("{err}").contains("unsupported"), "{err}");
+    }
+}
+
+/// Translate a plain rebinding: `x = expr;`.
+///
+/// Only a bare-name target is supported. A field or index target would need a
+/// memory model this checker does not have, so it is refused rather than
+/// approximated.
+fn translate_assign(assign: &syn::ExprAssign, out: &mut Vec<String>) -> Result<(), Error> {
+    let syn::Expr::Path(path) = assign.left.as_ref() else {
+        return Err(Error::Unsupported(
+            "assignment target must be a plain name".to_string(),
+        ));
+    };
+    let Some(ident) = path.path.get_ident() else {
+        return Err(Error::Unsupported(
+            "assignment target must be a plain name".to_string(),
+        ));
+    };
+    let value = translate_expr(&assign.right, true)?;
+    out.push(format!("{ident} = {value};"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod assign_tests {
+    use super::*;
+
+    /// A plain rebinding becomes a Briev assignment.
+    #[test]
+    fn assignment_becomes_a_briev_rebinding() {
+        let file = syn::parse_file(
+            "#[post(term == 5)]\nfn f() -> i64 { let mut acc = 0; acc = acc + 5; acc }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(
+            out[0].briev.contains("acc = acc + 5"),
+            "expected a rebinding, got: {}",
+            out[0].briev
+        );
+    }
+
+    /// A parameter is a plain name, so rebinding it translates too.
+    #[test]
+    fn parameter_rebinding_is_a_plain_name() {
+        let file = syn::parse_file("#[post(term >= 0)]\nfn f(p: i64) -> i64 { p = 1; p }\n")
+            .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert!(out[0].briev.contains("p = 1"), "{}", out[0].briev);
+    }
+
+    /// An index target needs a memory model this checker does not have.
+    #[test]
+    fn assignment_to_an_index_target_is_refused() {
+        let file = syn::parse_file("#[post(term >= 0)]\nfn f(a: i64) -> i64 { a[0] = 1; a }\n")
+            .expect("parse");
+        let err = translate_file(&file).expect_err("index target must be refused");
+        assert!(format!("{err}").contains("plain name"), "{err}");
     }
 }
