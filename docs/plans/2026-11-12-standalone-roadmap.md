@@ -283,3 +283,15 @@ Shipped:
 `v0.1.0` was re-cut so the published artifact carries the fix. C2c is closed;
 what remains on the roadmap is prover depth (C3 call-containing bodies, C4 Z3
 wiring), not packaging.
+
+## Co-development lab (2026-11-13)
+
+Briev has a worktree, `../briev-counsel-lab` (branch `feat/counsel-lab`), whose
+charter is `briev-counsel-lab/docs/plans/2026-11-13-counsel-lab.md`. It is a
+consumer of Counsel, never merged: it annotates real Briev kernels, runs
+`scripts/counsel-check-kernels.sh`, and records each verdict plus the class of
+blocker in `docs/labs/counsel-ledger.md`.
+
+Slice 1 result: 2 of 3 kernels proved with no Counsel change (`align16`,
+`wrap_bound`); the only blocker was the i64-only boundary type (`gcd`, usize).
+The ledger more than doubles as the evidence base for what to build next.
