@@ -51,8 +51,9 @@ impl std::fmt::Display for Error {
             Error::Parse(why) => write!(f, "cannot parse Rust source: {why}"),
             Error::Unsupported(why) => write!(
                 f,
-                "{why} — Counsel verifies a pure-integer subset: `i64` \
-                 parameters and return, integer arithmetic, comparisons, `let`, \
+                "{why} — Counsel verifies a pure-integer subset: integer \
+                 parameters and return (i8-i64, u8-u32, and u64/usize/isize with \
+                 their range facts), integer arithmetic, comparisons, `let`, \
                  `if`/`else`, `return`, and a trailing expression"
             ),
             Error::Contract(why) => write!(f, "{why}"),
