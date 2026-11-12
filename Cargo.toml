@@ -38,7 +38,7 @@ static = ["dep:syn", "dep:serde_json"]
 [dependencies]
 counsel-macros = { version = "0.1", path = "counsel-macros", optional = true }
 serde_json = { version = "1", optional = true }
-syn = { version = "2", features = ["full", "parsing", "extra-traits"], optional = true }
+syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit-mut"], optional = true }
 
 [[bin]]
 name = "counsel-check"

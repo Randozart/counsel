@@ -36,6 +36,10 @@ pub struct TranslatedFn {
 pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String>), Error> {
     let mut out = Vec::new();
     let mut warnings = Vec::new();
+    // P3: resolve calls BEFORE translation. The expression layer is deliberately
+    // context-free, so threading a summary map through it would touch seven
+    // signatures; inlining first keeps it a pure printer and costs one pass here.
+    let summaries = build_summaries(&file.items);
     for item in &file.items {
         let syn::Item::Fn(item_fn) = item else {
             continue;
@@ -46,6 +50,8 @@ pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String
         if pre.is_none() && post.is_none() {
             continue;
         }
+        let inlined = inline_calls(item_fn, &summaries)?;
+        let item_fn = &inlined;
         let translated = translate_fn(item_fn, pre, post)?;
         let name = translated.name.clone();
         let (params_text, _facts) = translate_params(&name, &item_fn.sig)?;
@@ -882,8 +888,8 @@ mod width_tests {
     /// M1: an unsigned parameter must carry the fact pinning it to its range.
     #[test]
     fn unsigned_parameter_carries_a_domain_fact() {
-        let file = syn::parse_file("#[post(term >= 0)]\nfn f(x: u32) -> u32 { x }\n")
-            .expect("parse");
+        let file =
+            syn::parse_file("#[post(term >= 0)]\nfn f(x: u32) -> u32 { x }\n").expect("parse");
         let (out, _warnings) = translate_file(&file).expect("translate");
         assert!(
             out[0].briev.contains("x >= 0 && x <= 4294967295"),
@@ -895,13 +901,226 @@ mod width_tests {
     /// M1: a full-width parameter needs no fact - the model already matches it.
     #[test]
     fn i64_parameter_adds_no_domain_fact() {
-        let file = syn::parse_file("#[post(term >= 0)]\nfn f(x: i64) -> i64 { x }\n")
-            .expect("parse");
+        let file =
+            syn::parse_file("#[post(term >= 0)]\nfn f(x: i64) -> i64 { x }\n").expect("parse");
         let (out, _warnings) = translate_file(&file).expect("translate");
         assert!(
             !out[0].briev.contains("x >= 0 && x <="),
             "i64 must add no fact: {}",
             out[0].briev
         );
+    }
+}
+
+// ── P3: calls, resolved before translation ──────────────────────────────
+//
+// The expression layer is context-free on purpose, so a call is resolved HERE,
+// on the `syn` tree, before any Briev text exists: a summarised call becomes the
+// callee's value expression with the caller's arguments substituted in.
+
+/// A callee's returned value, substitutable at a call site.
+struct Summary {
+    params: Vec<String>,
+    value: syn::Expr,
+}
+
+/// Collect value summaries for pure integer functions with no precondition.
+///
+/// R3: substituting a callee's body assumes its precondition holds at the call
+/// site, and this checker never establishes that — so a callee carrying an
+/// explicit `#[pre]` earns no summary and its call stays unsupported. Anything
+/// else would be a false proof resting on an unproven assumption.
+///
+/// R4: a body with an early `return` has no single value, so it is excluded too
+/// (a `gcd`-style `if`/`else` *expression* is fine — it has one value).
+fn build_summaries(items: &[syn::Item]) -> std::collections::HashMap<String, Summary> {
+    let mut sums = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Fn(item_fn) = item else { continue };
+        if matches!(contract_attr(&item_fn.attrs, "pre"), Ok(Some(_))) {
+            continue;
+        }
+        let Some(params) = plain_integer_params(&item_fn.sig) else {
+            continue;
+        };
+        let Some(value) = single_value(&item_fn.block) else {
+            continue;
+        };
+        sums.insert(item_fn.sig.ident.to_string(), Summary { params, value });
+    }
+    sums
+}
+
+/// Parameter names when every parameter is a plain integer binding.
+fn plain_integer_params(sig: &syn::Signature) -> Option<Vec<String>> {
+    let mut params = Vec::new();
+    for input in &sig.inputs {
+        let syn::FnArg::Typed(pat_ty) = input else {
+            return None;
+        };
+        let syn::Pat::Ident(ident) = pat_ty.pat.as_ref() else {
+            return None;
+        };
+        integer_width("", "parameter", &pat_ty.ty).ok()?;
+        params.push(ident.ident.to_string());
+    }
+    if let syn::ReturnType::Type(_, ty) = &sig.output {
+        integer_width("", "return type", ty).ok()?;
+    }
+    Some(params)
+}
+
+/// The single value a summary-able body returns.
+fn single_value(block: &syn::Block) -> Option<syn::Expr> {
+    if block
+        .stmts
+        .iter()
+        .any(|stmt| matches!(stmt, syn::Stmt::Expr(syn::Expr::Return(_), _)))
+    {
+        return None;
+    }
+    match block.stmts.last()? {
+        syn::Stmt::Expr(expr, None) => Some(expr.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve summarised calls to the callee's value before translation.
+fn inline_calls(
+    item_fn: &syn::ItemFn,
+    sums: &std::collections::HashMap<String, Summary>,
+) -> Result<syn::ItemFn, Error> {
+    let mut inlined = item_fn.clone();
+    let mut inliner = Inliner {
+        sums,
+        stack: Vec::new(),
+        failure: None,
+    };
+    syn::visit_mut::VisitMut::visit_item_fn_mut(&mut inliner, &mut inlined);
+    match inliner.failure {
+        Some(error) => Err(error),
+        None => Ok(inlined),
+    }
+}
+
+/// Substitutes summary-able calls; leaves anything else for the translator.
+struct Inliner<'a> {
+    sums: &'a std::collections::HashMap<String, Summary>,
+    stack: Vec<String>,
+    failure: Option<Error>,
+}
+
+impl syn::visit_mut::VisitMut for Inliner<'_> {
+    /// Rewrite one expression node, recursing first so nested calls resolve.
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        syn::visit_mut::visit_expr_mut(self, node);
+        if self.failure.is_some() {
+            return;
+        }
+        let syn::Expr::Call(call) = node else { return };
+        let Some(name) = direct_name(&call.func) else {
+            self.failure = Some(Error::Unsupported(
+                "call through a non-name target is not supported".to_string(),
+            ));
+            return;
+        };
+        let Some(summary) = self.sums.get(&name) else {
+            return;
+        };
+        if self.stack.iter().any(|seen| seen == &name) {
+            // R4: a cycle earns no summary — leave the call for the translator.
+            return;
+        }
+        if summary.params.len() != call.args.len() {
+            self.failure = Some(Error::Unsupported(format!(
+                "`{name}`: call arity does not match its definition"
+            )));
+            return;
+        }
+        let args: Vec<syn::Expr> = call.args.iter().cloned().collect();
+        let mut value = summary.value.clone();
+        let mut subst = Substitute {
+            params: &summary.params,
+            args: &args,
+        };
+        syn::visit_mut::VisitMut::visit_expr_mut(&mut subst, &mut value);
+        self.stack.push(name);
+        self.visit_expr_mut(&mut value);
+        self.stack.pop();
+        *node = value;
+    }
+}
+
+/// The identifier a call target names, when it is a bare name.
+fn direct_name(func: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    path.path.get_ident().map(|ident| ident.to_string())
+}
+
+/// Replaces the callee's parameters with the caller's arguments.
+struct Substitute<'a> {
+    params: &'a [String],
+    args: &'a [syn::Expr],
+}
+
+impl syn::visit_mut::VisitMut for Substitute<'_> {
+    /// Swap a parameter reference for the argument it was called with.
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        if let Some(name) = direct_name(node) {
+            if let Some(index) = self.params.iter().position(|param| param == &name) {
+                *node = self.args[index].clone();
+                return;
+            }
+        }
+        syn::visit_mut::visit_expr_mut(self, node);
+    }
+}
+
+#[cfg(test)]
+mod call_tests {
+    use super::*;
+
+    /// A call to a summarised callee becomes the callee's value.
+    #[test]
+    fn call_to_a_summarised_callee_is_inlined() {
+        let file = syn::parse_file(
+            "fn inc(a: i64) -> i64 { a + 1 }\n\
+             #[post(term == a + 2)]\n\
+             fn uses(a: i64) -> i64 { inc(a) + 1 }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        assert_eq!(out.len(), 1, "only the contracted fn is translated");
+        assert!(
+            !out[0].briev.contains("inc("),
+            "call should be resolved, got: {}",
+            out[0].briev
+        );
+    }
+
+    /// R4: recursion is refused, never guessed at.
+    #[test]
+    fn recursion_is_refused_not_guessed() {
+        let file = syn::parse_file(
+            "#[post(term >= 0)]\nfn gcd(a: i64, b: i64) -> i64 { if b == 0 { a } else { gcd(b, a % b) } }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("recursion must not produce a proof");
+        assert!(matches!(err, Error::Unsupported(_)), "{err}");
+    }
+
+    /// R3: a callee carrying a real precondition is never summarised, because
+    /// the call site never establishes it.
+    #[test]
+    fn preconditioned_callee_is_not_summarised() {
+        let file = syn::parse_file(
+            "#[pre(a > 0)]\nfn pos(a: i64) -> i64 { a }\n\
+             #[post(term > 0)]\nfn uses(a: i64) -> i64 { pos(a) }\n",
+        )
+        .expect("parse");
+        let err = translate_file(&file).expect_err("preconditioned callee must stay unsupported");
+        assert!(matches!(err, Error::Unsupported(_)), "{err}");
     }
 }
