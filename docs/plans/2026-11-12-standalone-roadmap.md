@@ -82,6 +82,18 @@ Verified: fresh cache downloads + verifies + builds (3.9 s); warm cache builds
 with a dead proxy (3.2 s, no network); explicit `BRIEVC` unchanged (3.2 s); no
 compiler and no network yields one message naming all four options.
 
+**Publish order.** The crate is now a single package for users, but
+`counsel-macros` must be published **first**: `counsel` depends on it by
+`version` + `path`, and a dry run against a crates.io that lacks it fails with
+
+```
+error: failed to prepare local package for uploading
+  no matching package named `counsel-macros` found
+```
+
+So: `cargo publish -p counsel-macros`, then `cargo publish -p counsel`.
+`counsel`'s own dry run passes once the companion is on the index.
+
 ## Item 5 — C3 + C4: prover depth
 
 - **C3** reason about bodies containing calls (currently skipped wholesale by
