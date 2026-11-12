@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-11
 **Trigger:** owner observation — "suspiciously little .bv code."
-**Status:** diagnosis complete; options below; no code changed yet.
+**Status:** E and A are DONE. E: the overstated claim was corrected in 3f60f83. A: the FFI callback ABI was fixed in briev-lang 43519b01 (flat host callbacks) and 0ea0fe6e (forwarding a callback parameter), and the orchestration plus the sampler moved into Briev in 323de0b and 48568bb. What remains from this plan is B (a Briev predicate library) and D (prover self-hosting).
 
 ---
 
