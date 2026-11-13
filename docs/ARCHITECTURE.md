@@ -1,6 +1,7 @@
 # Counsel — Architecture
 
-How Counsel works, as shipped. Two independent halves share one Briev core:
+How Counsel works, as shipped. Two independent halves, only one of which
+involves Briev:
 
 | Half | Crate / feature | When | Question it answers |
 |---|---|---|---|
@@ -15,15 +16,7 @@ reported as a pass.
 ## 1. The two halves at a glance
 
 ```
-                        bridge/counsel.bv   (Briev predicate core)
-                                 │
-              brievc build --library  →  libcounsel.a
-                                 │            ▲
-                     build.rs ───┘            │ link
-                                 │            │
-                          src/bindings.rs  (C ABI, checked in)
-                                 │
-                          src/lib.rs  (safe facade)
+                          src/lib.rs  (runtime checks, pure Rust)
                                  │
                     ┌────────────┴────────────┐
              runtime callers            (Phase 4 valve)
@@ -37,65 +30,55 @@ reported as a pass.
                           Proven / Unproven / Violated
 ```
 
-The runtime half **calls** Briev-compiled code; the static half **generates**
-Briev code and asks Briev's own prover about it. Neither re-implements a prover
-in Rust.
+The runtime half is **ordinary Rust**: no build script, no native library, no
+download. The static half **generates** Briev source and asks Briev's own prover
+about it, resolving a compiler on first use. Neither half re-implements a prover.
 
-### Who owns what (measured 2026-11-11)
+### Who owns what
 
-| Layer | Language | Lines | Where |
-|---|---|---:|---|
-| Predicates, equality, opcode dispatch | **Briev** | 167 | `bridge/counsel.bv` |
-| Obligation orchestration (`run_checked`) + sampler loop (`verify_samples`) | **Briev** | same file | `bridge/counsel.bv` |
-| Body prover (paths, bounds, tri-state verdicts) | Rust | 1,461 | `briev-lang/src/analysis/{verify_bodies,symbolic}.rs` |
-| Rust frontend, compiler discovery, report parsing | Rust | ~640 | `src/check/` |
-| Facade: callback marshalling + verdict mapping | Rust | 308 | `src/lib.rs` |
+| Layer | Language | Where |
+|---|---|---|
+| Runtime checks, equality, opcode dispatch, sampler | Rust | `src/lib.rs` |
+| Static frontend: translate, discover, report parsing | Rust | `src/check/` |
+| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `briev-lang` |
 
-The orchestration and the sampling loop moved into Briev once the cross-ABI
-callback ABI was fixed — `briev-lang` 43519b01 (a host's flat C callback) and
-0ea0fe6e (forwarding a callback parameter, which the sampler's recursion
-needs). The Rust layer is marshalling only; see `BUGS.md` and
-`docs/plans/2026-11-11-briev-share.md`.
+The runtime half used to be Briev-authored (`bridge/counsel.bv`, 167 lines),
+compiled by `build.rs` into a static library linked into the crate. It was a
+binding layer over about seven integer predicates, and it forced every consumer
+to obtain a Briev compiler before their build could start, so it was ported to
+Rust and the whole build path deleted — see
+[`docs/plans/2026-11-14-briev-dependency-assessment.md`](plans/2026-11-14-briev-dependency-assessment.md).
 
 ---
 
 ## 2. Runtime half — `counsel`
 
-### 2.1 Build pipeline (`build.rs`)
+### 2.1 Build pipeline
 
-1. Resolve the compiler: `$BRIEVC`, else `brievc` on `PATH`.
-2. `brievc build bridge/counsel.bv --library --out $OUT_DIR/briev` — produces a
-   real static archive (`libcounsel.a`) plus a PIC `.so`.
-3. Link it into the crate (`cargo:rustc-link-search` + `rustc-link-lib=counsel`)
-   and re-run when the `.bv` changes (`cargo:rerun-if-changed`).
+There is none. The runtime half is plain Rust: `cargo build` compiles
+`src/lib.rs` and `counsel-macros`, and nothing else. The crate has no build
+script, so the default feature set resolves no compiler, produces no native
+archive and links nothing.
 
-`src/bindings.rs` holds the `extern "C"` declarations. They are generated with
-`brievc bindings bridge/counsel.bv rust --out <dir>` and committed; regenerate
-and commit the diff whenever exports change.
+### 2.2 The runtime checks
 
-### 2.2 What Briev provides
+Six small integer predicates, implemented directly in `src/lib.rs`. They were
+previously Briev `export defn`s compiled by `build.rs`; porting them removed the
+build-time compiler requirement.
 
-Every export is a pure `Int` ABI function carrying its own contract, so the
-prover discharges the machinery itself at build time.
-
-| Export | Returns | Used for |
+| Function | Returns | Used for |
 |---|---|---|
-| `add(a, b)` | `a + b` | end-to-end plumbing validation |
-| `within(x, lo, hi)` | `1` iff `lo ≤ x ≤ hi` | range obligation |
-| `is_positive(x)` | `1` iff `x > 0` | sign obligation |
-| `is_nonneg(x)` | `1` iff `x ≥ 0` | sign obligation |
-| `eq(a, b)` | `1` iff `a == b` | sampler output comparison |
-| `eval_pred(op, a, b, x)` | predicate truth | opcode dispatch: `0=GT`, `1=GE`, `2=LT`, `3=LE`, `4=IN` |
+| `add(a, b)` | `a + b` (wrapping) | plumbing validation |
+| `in_range(x, lo, hi)` | `lo ≤ x ≤ hi` | range obligation |
+| `positive(x)` | `x > 0` | sign obligation |
+| `nonneg(x)` | `x ≥ 0` | sign obligation |
+| `eq(a, b)` | `a == b` | sampler output comparison |
+| `satisfies(op, x)` | predicate truth | dispatch: `GT`, `GE`, `LT`, `LE`, `In` |
 
-`txn step_up(i, cap) [i < cap][i == cap]` is not exported — it exists to
-dogfood a genuinely proved contract (a trivial `[true][true]` contract is a
-compile error in Briev).
-
-**Deliberately absent:** a function-pointer orchestrator (`run_checked`). Briev
-compiles it, but its C binding advertises a flat `int64_t (*)(int64_t)` while
-the backend lowers fn-pointer parameters to a closure/self convention
-(`load target from the slot`, call `(slot, arg)`), so a flat host callback
-SIGSEGVs. See [`../BUGS.md`](../BUGS.md).
+`run_checked` and `verify_samples` keep their `extern "C"` callback signatures
+so the public API is unchanged, but they are ordinary Rust functions now.
+Nothing crosses an FFI boundary, which is why the cross-ABI callback defect
+recorded in [`../BUGS.md`](../BUGS.md) stopped mattering.
 
 ### 2.3 Safe facade (`src/lib.rs`)
 
@@ -268,10 +251,7 @@ counts as a pass.
 
 | Path | Contents |
 |---|---|
-| `bridge/counsel.bv` | Briev machinery: predicates, `eq`, `eval_pred`, `step_up` |
-| `build.rs` | compile + link the Briev library |
-| `src/bindings.rs` | C ABI declarations (generated, committed) |
-| `src/lib.rs` | safe runtime facade |
+| `src/lib.rs` | runtime checks, sampler, predicate dispatch (pure Rust) |
 | `src/check/translate.rs` | Rust → Briev source |
 | `src/check/brievc.rs` | compiler discovery + discharge + report parsing |
 | `src/check/mod.rs` | `Outcome`, `Report`, `check_source`, `check_file` |
@@ -282,12 +262,12 @@ counts as a pass.
 ## 7. Reproduce
 
 ```bash
-# Runtime half: builds the Briev machinery, links it, runs the checks
-BRIEVC=/path/to/brievc cargo test -p counsel
+# Runtime half: plain Rust, no compiler involved
+cargo test -p counsel
 
-# Static half: drives the real prover (needs brievc with --verify-bodies)
-BRIEVC=/path/to/brievc cargo test --features static
+# Static half: drives the real prover (fetches a pinned brievc if absent)
+cargo test --features static
 
 # Whole workspace (counsel + the attribute companion)
-BRIEVC=/path/to/brievc cargo test --workspace --all-features
+cargo test --workspace --all-features
 ```

@@ -1,54 +1,57 @@
 # Counsel
 
-Basic **pre/post-condition verification** for Rust. The **predicate core is
-authored in Briev** — the contract-first language from the
-[`briev-lang`](https://github.com/) project — compiled to a native static
-library and linked into a Cargo crate; the body prover that discharges static
-contracts is part of the Briev compiler itself.
+Basic **pre/post-condition verification** for Rust.
 
-**Who owns what** (measured 2026-11-11, see
-[`docs/plans/2026-11-11-briev-share.md`](docs/plans/2026-11-11-briev-share.md)):
+Runtime checks are plain Rust with no external requirements. The `static`
+feature proves contracts **ahead of time** by handing them to the body prover
+from [`briev-lang`](https://github.com/), the contract-first language's compiler.
+
+**Briev is only involved if you ask for `--features static`.** The default
+feature set compiles no Briev, links no Briev and runs no Briev — `cargo add
+counsel` builds offline on any platform.
+
+**Who owns what:**
 
 | Layer | Language | Where |
 |---|---|---|
-| Predicates, equality, opcode dispatch | **Briev** (114 lines) | `bridge/counsel.bv` |
-| Body prover (paths, bounds, tri-state verdicts) | Rust (1,461 lines) | `briev-lang/src/analysis/verify_bodies.rs`, `symbolic.rs` |
-| Rust frontend, compiler discovery, report parsing | Rust (~640 lines) | `src/check/` |
-| Runtime orchestration and sampler loop | Rust (253 lines) | `src/lib.rs` |
-
-The orchestration belongs in Briev too, and will move there once Briev's
-cross-ABI callback ABI is fixed (see `BUGS.md` and the plan above).
+| Runtime checks, equality, opcode dispatch, sampler | Rust | `src/lib.rs` |
+| Static-verification frontend (translate, discover, parse reports) | Rust | `src/check/` |
+| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `briev-lang` |
 
 Positioned as **lighter than Kani**: it enforces obligations at runtime and
 cross-verifies a function against a shadow reference. It is not a full
 model-checker over the Rust memory model.
 
-> **Status: Phases 0–4 shipped (committed).** The full path —
-> `bridge/counsel.bv` → `brievc build --library` → C-ABI bindings → safe Rust
-> facade — is working end-to-end. Every Briev export carries and proves its
-> own contract; every obligation's truth value is Briev-computed.
+> **Status: Phases 0–4 shipped.** The runtime half is pure Rust; the static half
+> translates a restricted pure-integer Rust subset into Briev `defn`s and
+> discharges them with Briev's own body prover.
 >
 > **Docs:** [Architecture](docs/ARCHITECTURE.md) (how it works) ·
 > [Examples](docs/EXAMPLES.md) (worked end-to-end walks).
 
 ## How it works
 
+### Runtime (`default` features) — no Briev
+
 ```
-bridge/counsel.bv   ← verification machinery, authored in Briev
-        │  (brievc build --library → libcounsel.a)   [build.rs]
-        ▼
-src/bindings.rs     ← checked-in C-ABI bindings (regenerated when exports change)
-        ▼
-src/lib.rs          ← safe Rust facade: contract, verify, satisfies, checks
+src/lib.rs   ← contract, verify, satisfies, checks: ordinary Rust
 ```
 
-`build.rs` shells to `brievc` (selectable via the `BRIEVC` env var, default
-`brievc` on PATH), compiles the `.bv` machinery to a static library, and links
-it into the crate.
+`#[pre]`/`#[post]`/`#[invariant]` are inert markers from the `counsel-macros`
+proc-macro crate. There is no build script, no native library and no download.
 
-The static half (`--features static`) proves contracts **before** the program
-runs by translating a restricted pure-integer Rust subset into Briev `defn`s and
-discharging them through `brievc --verify-bodies`.
+### Static (`--features static`) — Briev's prover
+
+```
+Rust source ──syn──> translate to Briev `defn`s ──> brievc --verify-bodies
+t                                                        │
+                                                  typed verdicts
+```
+
+A `brievc` binary is resolved on first use: `$BRIEVC`, else a previously fetched
+pinned toolchain in the cache, else `brievc` on `PATH`, else a sibling
+`briev-lang` checkout, else the pinned release is downloaded once and
+sha256-verified. Set `COUNSEL_NO_DOWNLOAD=1` to forbid the fetch.
 
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
@@ -62,10 +65,10 @@ counsel = "0.1"                                        # runtime API + attribute
 counsel = { version = "0.1", features = ["static"] }   # + static verification
 ```
 
-| Feature | Gives you | Needs `brievc` |
+| Feature | Gives you | Needs a Briev compiler |
 |---|---|---|
-| `macros` (default) | `#[pre]`/`#[post]`/`#[case]` accepted by rustc | no |
-| `static` | the `counsel::check` API and the `counsel-check` binary | **yes, at check time** |
+| `macros` (default) | `#[pre]`/`#[post]`/`#[invariant]` accepted by rustc | no |
+| `static` | the `counsel::check` API and the `counsel-check` binary | **yes, at check time** (fetched once, or set `BRIEVC`) |
 
 `counsel-macros` is a separate crate only because Rust requires
 `proc-macro = true` crates to stand alone; `counsel` re-exports its attributes,
@@ -74,16 +77,20 @@ so you never add it yourself.
 The attributes are **inert markers** — they enforce nothing by themselves.
 Enforcement comes from `counsel-check` (static) or `contract()` (runtime).
 
-`counsel` (the runtime half) needs the compiler **at build time**, and now
-fetches it for you. `build.rs` resolves one in this order:
+`counsel` (the **runtime half**) needs nothing. It is plain Rust: no build
+script, no native library, no compiler, no download.
 
-1. `COUNSEL_BRIEVC` / `BRIEVC` — an explicit binary (dev loop, CI, air-gapped)
+The **static half** (`--features static`) needs a `brievc` binary **at check
+time**. `counsel::check` resolves one on first use, in this order:
+
+1. `BRIEVC` — an explicit binary (dev loop, CI, air-gapped)
 2. the pinned release cache — extracted once, then reused offline
 3. `brievc` on `PATH` — a locally installed compiler
-4. the pinned GitHub release — downloaded, **sha256-verified**, extracted
+4. a sibling `briev-lang` checkout
+5. the pinned GitHub release — downloaded, **sha256-verified**, extracted
 
 ```bash
-cargo test          # first build fetches brievc into ~/.cache/counsel (~10 MB)
+cargo test --features static   # first check fetches brievc (~48 MB) into the cache
 ```
 
 The cache lives at `$XDG_CACHE_HOME/counsel` (or `~/.cache/counsel`); override it

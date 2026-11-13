@@ -1,6 +1,9 @@
 # Does Counsel actually need Briev?
 
-**Status:** assessment, not yet decided.
+**Status:** implemented (2026-11-14). The runtime half is pure Rust — `build.rs`,
+`bridge/counsel.bv` and `src/bindings.rs` are deleted (counsel `e7c6194`) — so the
+default feature set needs no Briev at all. Briev is resolved only at check time
+for `--features static`, by a sha256-verified fetch (counsel `f0afd92`).
 **Question (Randy):** *"In using Briev, are we actually getting anything, or can we
 pre-compile a binary to embed? Is Briev actually helpful here? We don't need Briev
 code in the crate to do static proof, no?"*
