@@ -379,9 +379,7 @@ fn expr_statement(
             out.extend(if_statements(if_expr)?);
             Ok(())
         }
-        syn::Expr::ForLoop(_) => Err(Error::Unsupported(
-            "loops are not yet built in-process".to_string(),
-        )),
+        syn::Expr::ForLoop(for_loop) => unroll_loop(for_loop, out),
         syn::Expr::Assign(assign) => {
             let syn::Expr::Path(path) = assign.left.as_ref() else {
                 return Err(Error::Unsupported(
@@ -521,30 +519,382 @@ fn signature_facts(name: &str, sig: &syn::Signature) -> Result<Vec<(String, Opti
     Ok(facts)
 }
 
-/// Build one contracted function as a prover input.
-fn definition(item_fn: &syn::ItemFn) -> Result<TopLevel, Error> {
+/// Unrolling limit, matching the text emitter.
+const MAX_LOOP_UNROLL: i64 = 64;
+
+/// An integer literal, allowing a leading negation.
+fn literal_int(node: &syn::Expr) -> Option<i64> {
+    match node {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Int(int) => int.base10_parse().ok(),
+            _ => None,
+        },
+        syn::Expr::Unary(unary) => match unary.op {
+            syn::UnOp::Neg(_) => literal_int(&unary.expr).map(|value| -value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Replaces the loop variable with a constant in a cloned body.
+struct SubstituteLoopVar<'a> {
+    name: &'a str,
+    value: i64,
+}
+
+impl syn::visit_mut::VisitMut for SubstituteLoopVar<'_> {
+    /// Substitute at each identifier, then keep descending.
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        let is_target = matches!(node, syn::Expr::Path(path) if path.path.is_ident(self.name));
+        if is_target {
+            *node = syn::parse_str(&self.value.to_string()).expect("loop index literal");
+            return;
+        }
+        syn::visit_mut::visit_expr_mut(self, node);
+    }
+}
+
+/// Unroll a constant-bounded `for` loop.
+///
+/// A variable trip count cannot be unrolled soundly, so it is refused rather
+/// than approximated — an invariant is the way to verify such a loop.
+fn unroll_loop(
+    for_loop: &syn::ExprForLoop,
+    out: &mut Vec<Statement>,
+) -> Result<(), Error> {
+    let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
+        return Err(Error::Unsupported(
+            "`for` loops are supported only with a plain loop variable".to_string(),
+        ));
+    };
+    let syn::Expr::Range(range) = for_loop.expr.as_ref() else {
+        return Err(Error::Unsupported(
+            "`for` loops are supported only over `lo..hi` / `lo..=hi`".to_string(),
+        ));
+    };
+    let (Some(start), Some(end)) = (
+        range.start.as_deref().and_then(literal_int),
+        range.end.as_deref().and_then(literal_int),
+    ) else {
+        return Err(Error::Unsupported(
+            "`for` loop bounds must be integer literals: a dynamic bound (e.g. `0..n`) \
+             needs a loop invariant (`#[invariant(...)]`). Unrolling a variable trip \
+             count would be unsound, so it is refused rather than approximated"
+                .to_string(),
+        ));
+    };
+    let end = match range.limits {
+        syn::RangeLimits::HalfOpen(_) => end,
+        syn::RangeLimits::Closed(_) => end + 1,
+    };
+    let count = end.saturating_sub(start);
+    if count > MAX_LOOP_UNROLL {
+        return Err(Error::Unsupported(format!(
+            "`for` loop of {count} iterations exceeds the unrolling limit ({MAX_LOOP_UNROLL})"
+        )));
+    }
+    if count <= 0 {
+        return Ok(());
+    }
+    let name = pat.ident.to_string();
+    for step in start..end {
+        let mut body = for_loop.body.clone();
+        let mut swap = SubstituteLoopVar {
+            name: &name,
+            value: step,
+        };
+        syn::visit_mut::VisitMut::visit_block_mut(&mut swap, &mut body);
+        out.extend(block(&body.stmts)?);
+    }
+    Ok(())
+}
+
+/// A value expression as statements, desugaring a supported method call.
+fn value_statements(node: &syn::Expr) -> Result<Vec<Statement>, Error> {
+    if let syn::Expr::MethodCall(call) = node {
+        let method = integer_method(call).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "unsupported expression (pure-integer subset): {}",
+                describe(node)
+            ))
+        })?;
+        return Ok(method_terms(method));
+    }
+    Ok(vec![Statement::Term(Some(expr(node, true)?))])
+}
+
+/// The domain facts followed by the author's precondition.
+fn precondition(item_fn: &syn::ItemFn) -> Result<Vec<Expr>, Error> {
     let name = item_fn.sig.ident.to_string();
     let facts = signature_facts(&name, &item_fn.sig)?;
-    let explicit_pre = contract_attr(&item_fn.attrs, "pre")?
-        .map(|node| expr(&node, true))
-        .transpose()?;
+    let mut parts: Vec<Expr> = facts.into_iter().filter_map(|(_, fact)| fact).collect();
+    if let Some(node) = contract_attr(&item_fn.attrs, "pre")? {
+        parts.push(expr(&node, true)?);
+    }
+    Ok(parts)
+}
+
+/// The shape of the one `for` loop an invariant applies to.
+struct LoopShape {
+    var: String,
+    lower: Expr,
+    bound: Expr,
+    closed: bool,
+    at: usize,
+    body: Vec<syn::Stmt>,
+    tail: syn::Expr,
+}
+
+/// Locate the loop an invariant applies to and the value returned after it.
+fn loop_shape(item_fn: &syn::ItemFn) -> Result<LoopShape, Error> {
+    for (at, stmt) in item_fn.block.stmts.iter().enumerate() {
+        let syn::Stmt::Expr(syn::Expr::ForLoop(for_loop), _) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
+            continue;
+        };
+        let syn::Expr::Range(range) = for_loop.expr.as_ref() else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (range.start.as_deref(), range.end.as_deref()) else {
+            continue;
+        };
+        let tail = item_fn
+            .block
+            .stmts
+            .iter()
+            .skip(at + 1)
+            .rev()
+            .find_map(|later| match later {
+                syn::Stmt::Expr(node, None) => Some(node),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "`#[invariant(...)]` needs the loop followed by a returned value, so \
+                     the exit state can be checked against the postcondition"
+                        .to_string(),
+                )
+            })?;
+        return Ok(LoopShape {
+            var: pat.ident.to_string(),
+            lower: expr(start, true)?,
+            bound: expr(end, true)?,
+            closed: matches!(range.limits, syn::RangeLimits::Closed(_)),
+            at,
+            body: for_loop.body.stmts.clone(),
+            tail: tail.clone(),
+        });
+    }
+    Err(Error::Unsupported(
+        "`#[invariant(...)]` needs a `for` loop over `lo..hi` to apply to".to_string(),
+    ))
+}
+
+/// Every local a loop obligation must carry, from either source.
+///
+/// `let` bindings made before the loop supply the bounds and the entry values
+/// VC1 pins; anything the body assigns may be nested inside a guard, so the scan
+/// descends into `if`/blocks rather than looking one level deep.
+fn loop_locals(item_fn: &syn::ItemFn, shape: &LoopShape) -> Vec<String> {
+    let mut locals: Vec<String> = Vec::new();
+    for stmt in item_fn.block.stmts.iter().take(shape.at) {
+        let syn::Stmt::Local(local) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &local.pat else {
+            continue;
+        };
+        let name = pat.ident.to_string();
+        if !locals.contains(&name) {
+            locals.push(name);
+        }
+    }
+    collect_assigned(&shape.body, &mut locals);
+    locals
+}
+
+/// Record every assignment target, descending into guards and blocks.
+fn collect_assigned(stmts: &[syn::Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        match stmt {
+            syn::Stmt::Expr(node, _) => collect_assigned_expr(node, out),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = local.init.as_ref() {
+                    collect_assigned_expr(&init.expr, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Record the target of an assignment wherever it appears.
+fn collect_assigned_expr(node: &syn::Expr, out: &mut Vec<String>) {
+    match node {
+        syn::Expr::Assign(assign) => {
+            if let syn::Expr::Path(path) = assign.left.as_ref() {
+                if let Some(ident) = path.path.get_ident() {
+                    let name = ident.to_string();
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+            collect_assigned_expr(&assign.right, out);
+        }
+        syn::Expr::If(if_expr) => {
+            collect_assigned(&if_expr.then_branch.stmts, out);
+            if let Some((_, else_expr)) = if_expr.else_branch.as_ref() {
+                collect_assigned_expr(else_expr, out);
+            }
+        }
+        syn::Expr::Block(blocked) => collect_assigned(&blocked.block.stmts, out),
+        syn::Expr::ForLoop(for_loop) => collect_assigned(&for_loop.body.stmts, out),
+        syn::Expr::While(while_loop) => collect_assigned(&while_loop.body.stmts, out),
+        syn::Expr::Loop(loop_expr) => collect_assigned(&loop_expr.body.stmts, out),
+        syn::Expr::Binary(bin) => {
+            collect_assigned_expr(&bin.left, out);
+            collect_assigned_expr(&bin.right, out);
+        }
+        _ => {}
+    }
+}
+
+/// The entry pins VC1 checks: each carried local against its initialiser, and
+/// the loop variable against the lower bound.
+fn entry_pins(
+    item_fn: &syn::ItemFn,
+    shape: &LoopShape,
+    locals: &[String],
+) -> Result<Vec<Expr>, Error> {
+    let mut pins: Vec<Expr> = Vec::new();
+    for stmt in item_fn.block.stmts.iter().take(shape.at) {
+        let syn::Stmt::Local(local) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &local.pat else {
+            continue;
+        };
+        let local_name = pat.ident.to_string();
+        if !locals.contains(&local_name) {
+            continue;
+        }
+        let Some(init) = local.init.as_ref() else {
+            continue;
+        };
+        pins.push(binary(
+            BinaryOpKind::Eq,
+            ident(&local_name),
+            expr(&init.expr, true)?,
+        ));
+    }
+    pins.push(binary(
+        BinaryOpKind::Eq,
+        ident(&shape.var),
+        shape.lower.clone(),
+    ));
+    Ok(pins)
+}
+
+/// Emit the three Hoare obligations for an invariant-carrying loop.
+///
+/// All three are required: `_preserve` alone says the invariant survives one
+/// step, not that it holds on entry or is worth anything at exit.
+fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<TopLevel>, Error> {
+    let name = item_fn.sig.ident.to_string();
+    let shape = loop_shape(item_fn)?;
+    let locals = loop_locals(item_fn, &shape);
+    let pins = entry_pins(item_fn, &shape, &locals)?;
+    let invariant = expr(invariant, true)?;
+    let pre = precondition(item_fn)?;
     let post = contract_attr(&item_fn.attrs, "post")?
         .map(|node| expr(&node, true))
-        .transpose()?;
+        .transpose()?
+        .unwrap_or(Expr::Bool(true));
+    let body = block(&shape.body)?;
+    let (within, past) = if shape.closed {
+        (
+            binary(BinaryOpKind::Le, ident(&shape.var), shape.bound.clone()),
+            binary(BinaryOpKind::Gt, ident(&shape.var), shape.bound.clone()),
+        )
+    } else {
+        (
+            binary(BinaryOpKind::Lt, ident(&shape.var), shape.bound.clone()),
+            binary(
+                BinaryOpKind::Ge,
+                ident(&shape.var),
+                shape.bound.clone(),
+            ),
+        )
+    };
 
-    // Domain facts come first so the author's precondition reads as the head of
-    // the conjunction, exactly as the text emitter wrote it.
-    let mut parts: Vec<Expr> = facts.into_iter().filter_map(|(_, fact)| fact).collect();
-    parts.extend(explicit_pre);
-    let pre = conjunction(parts).unwrap_or(Expr::Bool(true));
-    let post = post.unwrap_or(Expr::Bool(true));
+    // VC1: the invariant holds on entry, so the antecedent pins the locals
+    // rather than assuming it.
+    let mut init_parts = pre.clone();
+    init_parts.extend(pins);
+    let init_pre = conjunction(init_parts).unwrap_or(Expr::Bool(true));
+    let init = TopLevel::Definition(Definition::prover_defn(
+        format!("{name}_init"),
+        Contract::proven(init_pre, invariant.clone()),
+        vec![Statement::Term(Some(lit(0)))],
+    ));
 
+    // VC2: the body preserves it, with the guard and the precondition available.
+    let mut preserve_parts = pre.clone();
+    preserve_parts.push(invariant.clone());
+    preserve_parts.push(binary(
+        BinaryOpKind::Ge,
+        ident(&shape.var),
+        shape.lower.clone(),
+    ));
+    preserve_parts.push(within);
+    let preserve_pre = conjunction(preserve_parts).unwrap_or(Expr::Bool(true));
+    let mut preserve_body = body;
+    preserve_body.push(Statement::Assign(
+        ident(&shape.var),
+        binary(BinaryOpKind::Add, ident(&shape.var), lit(1)),
+    ));
+    preserve_body.push(Statement::Term(Some(lit(0))));
+    let preserve = TopLevel::Definition(Definition::prover_defn(
+        format!("{name}_preserve"),
+        Contract::proven(preserve_pre, invariant.clone()),
+        preserve_body,
+    ));
+
+    // VC3: the invariant at exit is enough to meet the contract.
+    let mut exit_parts = pre;
+    exit_parts.push(invariant);
+    exit_parts.push(past);
+    let exit_pre = conjunction(exit_parts).unwrap_or(Expr::Bool(true));
+    let exit = TopLevel::Definition(Definition::prover_defn(
+        format!("{name}_exit"),
+        Contract::proven(exit_pre, post),
+        value_statements(&shape.tail)?,
+    ));
+
+    Ok(vec![init, preserve, exit])
+}
+
+/// Build one contracted function as a prover input.
+fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+    let name = item_fn.sig.ident.to_string();
+    if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
+        return loop_contracts(item_fn, &invariant);
+    }
+    let pre = conjunction(precondition(item_fn)?).unwrap_or(Expr::Bool(true));
+    let post = contract_attr(&item_fn.attrs, "post")?
+        .map(|node| expr(&node, true))
+        .transpose()?
+        .unwrap_or(Expr::Bool(true));
     let body = block(&item_fn.block.stmts)?;
-    Ok(TopLevel::Definition(Definition::prover_defn(
+    Ok(vec![TopLevel::Definition(Definition::prover_defn(
         name,
         Contract::proven(pre, post),
         body,
-    )))
+    ))])
 }
 
 /// Build every contracted function in a parsed Rust file.
@@ -554,12 +904,13 @@ pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
         let syn::Item::Fn(item_fn) = item else {
             continue;
         };
-        let has_pre = item_fn.attrs.iter().any(|a| a.path().is_ident("pre"));
-        let has_post = item_fn.attrs.iter().any(|a| a.path().is_ident("post"));
-        if !has_pre && !has_post {
+        let has_contract = ["pre", "post", "invariant"]
+            .iter()
+            .any(|name| item_fn.attrs.iter().any(|attr| attr.path().is_ident(name)));
+        if !has_contract {
             continue;
         }
-        out.push(definition(item_fn)?);
+        out.extend(definition(item_fn)?);
     }
     Ok(out)
 }

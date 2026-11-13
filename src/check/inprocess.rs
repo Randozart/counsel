@@ -138,6 +138,50 @@ mod tests {
         );
     }
 
+    /// A constant-bounded loop is unrolled and proved.
+    #[test]
+    fn proves_a_constant_bounded_loop() {
+        let source = "#[post(term == 3)]\nfn sum_three() -> i64 { let mut acc = 0; for i in 0..3 { acc = acc + i; } acc }\n";
+        assert_eq!(verdicts(source), vec![("sum_three".to_string(), Outcome::Proven)]);
+    }
+
+    /// A dynamic bound is refused rather than unrolled unsoundly.
+    #[test]
+    fn refuses_a_dynamic_loop_bound() {
+        let err = check_source(
+            "#[post(term >= 0)]\nfn f(n: i64) -> i64 { let mut a = 0; for i in 0..n { a = a + 1; } a }\n",
+        )
+        .expect_err("dynamic bounds must be refused");
+        assert!(format!("{err}").contains("bounds must be integer literals"), "{err}");
+    }
+
+    /// An invariant-carrying loop yields the three Hoare obligations, all proved.
+    #[test]
+    fn proves_all_three_loop_obligations() {
+        let source = "#[pre(n >= 0 && n <= 1000)]\n#[post(term >= 0)]\n#[invariant(acc == i && i <= n)]\nfn count(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + 1; } acc }\n";
+        let seen = verdicts(source);
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen.iter().all(|(_, o)| *o == Outcome::Proven), "{seen:?}");
+    }
+
+    /// A wrong invariant is caught at the obligation it actually breaks.
+    #[test]
+    fn a_wrong_invariant_fails_at_entry() {
+        let source = "#[pre(n >= 0 && n <= 1000)]\n#[post(term >= 0)]\n#[invariant(acc == i + 1 && i <= n)]\nfn count_bad(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + 1; } acc }\n";
+        let seen = verdicts(source);
+        let init = seen.iter().find(|(n, _)| n == "count_bad_init").expect("init");
+        assert_eq!(init.1, Outcome::Violated, "{seen:?}");
+    }
+
+    /// A loop whose tail is a method call uses the same desugaring.
+    #[test]
+    fn proves_a_loop_ending_in_a_method_call() {
+        let source = "#[post(term >= 1)]\n#[invariant(best >= 1)]\nfn step(len: usize) -> usize { let mut best = 1; let half = len / 2; for d in 1..=half { if len % d == 0 { best = d; } } best.max(1) }\n";
+        let seen = verdicts(source);
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen.iter().all(|(_, o)| *o == Outcome::Proven), "{seen:?}");
+    }
+
     /// A declaration the prover never examines is Unproven, never Proven.
     #[test]
     fn an_unexamined_declaration_is_not_proven() {
