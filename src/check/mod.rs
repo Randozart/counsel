@@ -15,8 +15,8 @@
 // approximated: a wrong translation would be a wrong proof.
 
 pub mod build;
-pub mod prover;
 pub mod inprocess;
+pub mod prover;
 
 use std::path::Path;
 
@@ -185,9 +185,12 @@ mod tests {
     }
 
     #[test]
-    fn a_non_integer_boundary_type_is_rejected() {
-        let err = check_source("#[post(term >= 0)]\nfn f(a: String) -> i64 { 0 }\n")
-            .expect_err("a non-integer parameter must be rejected");
+    fn a_non_integer_return_type_is_rejected() {
+        // A non-integer *parameter* is now admitted as opaque (it is never read);
+        // the return is not, because `term` is compared as an integer.
+        let err =
+            check_source("#[pre(a >= 0)]\n#[post(term >= 0)]\nfn f(a: i64) -> String { 0 }\n")
+                .expect_err("a non-integer return must be rejected");
         assert!(matches!(err, Error::Unsupported(_)), "{err}");
     }
 

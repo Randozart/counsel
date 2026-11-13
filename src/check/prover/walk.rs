@@ -271,7 +271,10 @@ mod tests {
         let body = vec![
             Stmt::Guard(
                 compare(BinOp::Lt, name("a"), Expr::Int(0)),
-                vec![Stmt::Term(Some(Expr::Unary(UnOp::Neg, Box::new(name("a")))))],
+                vec![Stmt::Term(Some(Expr::Unary(
+                    UnOp::Neg,
+                    Box::new(name("a")),
+                )))],
             ),
             Stmt::Term(Some(name("a"))),
         ];
@@ -293,7 +296,10 @@ mod tests {
         let body = vec![
             Stmt::Guard(
                 compare(BinOp::Lt, name("a"), Expr::Int(0)),
-                vec![Stmt::Term(Some(Expr::Unary(UnOp::Neg, Box::new(name("a")))))],
+                vec![Stmt::Term(Some(Expr::Unary(
+                    UnOp::Neg,
+                    Box::new(name("a")),
+                )))],
             ),
             Stmt::Term(Some(name("a"))),
         ];
