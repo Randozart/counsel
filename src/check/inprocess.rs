@@ -58,6 +58,9 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     let mut warnings = Vec::new();
     let mut first_error: Option<Error> = None;
     let mut contracted = 0usize;
+    // Calls are resolved on the `syn` tree first, so the builder only ever sees
+    // value expressions. Summaries are computed once for the whole file.
+    let sums = build::build_summaries(&file.items);
     for item in &file.items {
         let syn::Item::Fn(item_fn) = item else {
             continue;
@@ -66,7 +69,17 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             continue;
         }
         contracted += 1;
-        match build::definition_for(item_fn) {
+        let inlined = match build::inline_calls(item_fn, &sums) {
+            Ok(inlined) => inlined,
+            Err(reason) => {
+                warnings.push(format!("skipped: {reason}"));
+                if first_error.is_none() {
+                    first_error = Some(reason);
+                }
+                continue;
+            }
+        };
+        match build::definition_for(&inlined) {
             Ok(found) => items.extend(found),
             Err(reason) => {
                 warnings.push(format!("skipped: {reason}"));
@@ -229,6 +242,40 @@ mod tests {
         let seen = verdicts(source);
         assert_eq!(seen.len(), 3, "{seen:?}");
         assert!(seen.iter().all(|(_, o)| *o == Outcome::Proven), "{seen:?}");
+    }
+
+    /// A call to a precondition-free helper resolves to the helper's value.
+    ///
+    /// The lab kernel `caller.rs` caught this missing after the text emitter was
+    /// deleted: inlining lived there, and no test here exercised a call.
+    #[test]
+    fn resolves_a_call_to_a_pure_helper() {
+        let source = "fn inc(a: i64) -> i64 { a + 1 }\n\
+                      #[post(term == a + 2)]\n\
+                      fn uses_inc(a: i64) -> i64 { inc(a) + 1 }\n";
+        let seen = verdicts(source);
+        assert_eq!(seen, vec![("uses_inc".to_string(), Outcome::Proven)]);
+    }
+
+    /// A callee with a precondition earns no summary, so its call is refused
+    /// rather than assumed — the R3 rule that keeps the proof sound.
+    #[test]
+    fn refuses_a_call_to_a_preconditioned_helper() {
+        let source = "#[pre(a > 0)]\nfn guarded(a: i64) -> i64 { a }\n\
+                      #[post(term >= 0)]\nfn uses(a: i64) -> i64 { guarded(a) }\n";
+        // Masking keeps the other declarations: the caller is skipped with a
+        // warning rather than failing the whole file.
+        let report = check_source(source).expect("the other function still verifies");
+        assert!(
+            report.verdicts.iter().all(|verdict| verdict.name != "uses"),
+            "an unresolved call must never be reported: {:?}",
+            report.verdicts
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("a function call")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     /// A declaration the prover never examines is Unproven, never Proven.

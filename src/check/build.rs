@@ -1027,6 +1027,177 @@ fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
     Ok(out)
 }
 
+// ── Call resolution ────────────────────────────────────────────────────
+//
+// The expression layer stays context-free, so a call is resolved here on the
+// `syn` tree before any node is built: a summarised call becomes the callee's
+// value expression with the caller's arguments substituted in.
+
+/// A callee's returned value, substitutable at a call site.
+///
+/// Public only because [`build_summaries`] and [`inline_calls`] are; the fields
+/// stay private to this module.
+pub struct Summary {
+    params: Vec<String>,
+    value: syn::Expr,
+}
+
+/// Collect value summaries for pure integer functions with no precondition.
+///
+/// R3: substituting a callee's body assumes its precondition holds at the call
+/// site, and this checker never establishes that — so a callee carrying an
+/// explicit `#[pre]` earns no summary and its call stays unsupported. Anything
+/// else would be a false proof resting on an unproven assumption.
+///
+/// R4: a body with an early `return` has no single value, so it is excluded too
+/// (a `gcd`-style `if`/`else` *expression* is fine — it has one value).
+pub fn build_summaries(items: &[syn::Item]) -> std::collections::HashMap<String, Summary> {
+    let mut sums = std::collections::HashMap::new();
+    for item in items {
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
+        if matches!(contract_attr(&item_fn.attrs, "pre"), Ok(Some(_))) {
+            continue;
+        }
+        let Some(params) = plain_integer_params(&item_fn.sig) else {
+            continue;
+        };
+        let Some(value) = single_value(&item_fn.block) else {
+            continue;
+        };
+        sums.insert(item_fn.sig.ident.to_string(), Summary { params, value });
+    }
+    sums
+}
+
+/// Parameter names when every parameter is a plain integer binding.
+fn plain_integer_params(sig: &syn::Signature) -> Option<Vec<String>> {
+    let mut params = Vec::new();
+    for input in &sig.inputs {
+        let syn::FnArg::Typed(pat_ty) = input else {
+            return None;
+        };
+        let syn::Pat::Ident(ident) = pat_ty.pat.as_ref() else {
+            return None;
+        };
+        width_of(&pat_ty.ty)?;
+        params.push(ident.ident.to_string());
+    }
+    if let syn::ReturnType::Type(_, ty) = &sig.output {
+        width_of(ty)?;
+    }
+    Some(params)
+}
+
+/// The single value a summary-able body returns.
+fn single_value(block_node: &syn::Block) -> Option<syn::Expr> {
+    if block_node
+        .stmts
+        .iter()
+        .any(|stmt| matches!(stmt, syn::Stmt::Expr(syn::Expr::Return(_), _)))
+    {
+        return None;
+    }
+    match block_node.stmts.last()? {
+        syn::Stmt::Expr(expr, None) => Some(expr.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve summarised calls to the callee's value before building nodes.
+pub fn inline_calls(
+    item_fn: &syn::ItemFn,
+    sums: &std::collections::HashMap<String, Summary>,
+) -> Result<syn::ItemFn, Error> {
+    let mut inlined = item_fn.clone();
+    let mut inliner = Inliner {
+        sums,
+        stack: Vec::new(),
+        failure: None,
+    };
+    syn::visit_mut::VisitMut::visit_item_fn_mut(&mut inliner, &mut inlined);
+    match inliner.failure {
+        Some(error) => Err(error),
+        None => Ok(inlined),
+    }
+}
+
+/// Substitutes summary-able calls; leaves anything else for the builder.
+struct Inliner<'a> {
+    sums: &'a std::collections::HashMap<String, Summary>,
+    stack: Vec<String>,
+    failure: Option<Error>,
+}
+
+impl syn::visit_mut::VisitMut for Inliner<'_> {
+    /// Rewrite one expression node, recursing first so nested calls resolve.
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        syn::visit_mut::visit_expr_mut(self, node);
+        if self.failure.is_some() {
+            return;
+        }
+        let syn::Expr::Call(call) = node else { return };
+        let Some(name) = direct_name(&call.func) else {
+            self.failure = Some(Error::Unsupported(
+                "call through a non-name target is not supported".to_string(),
+            ));
+            return;
+        };
+        let Some(summary) = self.sums.get(&name) else {
+            return;
+        };
+        if self.stack.iter().any(|seen| seen == &name) {
+            // R4: a cycle earns no summary — leave the call for the builder.
+            return;
+        }
+        if summary.params.len() != call.args.len() {
+            self.failure = Some(Error::Unsupported(format!(
+                "`{name}`: call arity does not match its definition"
+            )));
+            return;
+        }
+        let args: Vec<syn::Expr> = call.args.iter().cloned().collect();
+        let mut value = summary.value.clone();
+        let mut subst = Substitute {
+            params: &summary.params,
+            args: &args,
+        };
+        syn::visit_mut::VisitMut::visit_expr_mut(&mut subst, &mut value);
+        self.stack.push(name);
+        self.visit_expr_mut(&mut value);
+        self.stack.pop();
+        *node = value;
+    }
+}
+
+/// The identifier a call target names, when it is a bare name.
+fn direct_name(func: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = func else {
+        return None;
+    };
+    path.path.get_ident().map(|ident| ident.to_string())
+}
+
+/// Replaces the callee's parameters with the caller's arguments.
+struct Substitute<'a> {
+    params: &'a [String],
+    args: &'a [syn::Expr],
+}
+
+impl syn::visit_mut::VisitMut for Substitute<'_> {
+    /// Swap a parameter reference for the argument it was called with.
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        if let Some(name) = direct_name(node) {
+            if let Some(index) = self.params.iter().position(|param| param == &name) {
+                *node = self.args[index].clone();
+                return;
+            }
+        }
+        syn::visit_mut::visit_expr_mut(self, node);
+    }
+}
+
 /// Build one contracted function as a prover input.
 fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
     let name = item_fn.sig.ident.to_string();
