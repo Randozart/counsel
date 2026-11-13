@@ -395,18 +395,16 @@ fn translate_expr_stmt(
         syn::Expr::Assign(assign) => translate_assign(assign, out),
         // `a.max(b)` in value position: Briev has no expression-level
         // conditional, so the value becomes guarded `term` statements.
-        syn::Expr::MethodCall(call) if no_semi && is_last => {
-            match desugar_integer_method(call) {
-                Some(method) => {
-                    emit_method_terms(&method, out);
-                    Ok(())
-                }
-                None => Err(Error::Unsupported(format!(
-                    "unsupported expression (pure-integer subset): {}",
-                    describe_expr(expr)
-                ))),
+        syn::Expr::MethodCall(call) if no_semi && is_last => match desugar_integer_method(call) {
+            Some(method) => {
+                emit_method_terms(&method, out);
+                Ok(())
             }
-        }
+            None => Err(Error::Unsupported(format!(
+                "unsupported expression (pure-integer subset): {}",
+                describe_expr(expr)
+            ))),
+        },
         // A trailing expression is the function's value.
         other if no_semi && is_last => {
             out.push(format!("term {};", translate_expr(other, true)?));
@@ -1428,7 +1426,9 @@ fn emit_method_assign(method: &IntegerMethod, target: &str, out: &mut Vec<String
         IntegerMethod::Min(a, b) => {
             format!("{target} = {a};\n    when {b} < {a} {{ {target} = {b}; }};")
         }
-        IntegerMethod::Abs(a) => format!("{target} = {a};\n    when {a} < 0 {{ {target} = 0 - {a}; }};"),
+        IntegerMethod::Abs(a) => {
+            format!("{target} = {a};\n    when {a} < 0 {{ {target} = 0 - {a}; }};")
+        }
     };
     out.push(text);
 }
@@ -1484,7 +1484,11 @@ mod method_call_tests {
             .iter()
             .find(|defn| defn.name == "f_exit")
             .expect("exit obligation");
-        assert!(exit.briev.contains("when best >= 1 { term best; }"), "{}", exit.briev);
+        assert!(
+            exit.briev.contains("when best >= 1 { term best; }"),
+            "{}",
+            exit.briev
+        );
     }
 
     /// A method outside the whitelist is still refused, and named.
@@ -1495,7 +1499,10 @@ mod method_call_tests {
         let err = translate_file(&file).expect_err("pow is outside the subset");
         let text = format!("{err}");
         assert!(text.contains("a method call"), "{text}");
-        assert!(!text.contains("Expr::MethodCall"), "must not dump the AST: {text}");
+        assert!(
+            !text.contains("Expr::MethodCall"),
+            "must not dump the AST: {text}"
+        );
     }
 }
 
@@ -1556,7 +1563,10 @@ mod invariant_tests {
             vec!["f_init", "f_preserve", "f_exit"],
             "a loop is only proved when all three obligations are emitted"
         );
-        let preserve = out.iter().find(|d| d.name == "f_preserve").expect("preserve");
+        let preserve = out
+            .iter()
+            .find(|d| d.name == "f_preserve")
+            .expect("preserve");
         assert!(
             preserve
                 .briev
@@ -1597,7 +1607,10 @@ mod invariant_tests {
             exit.contains("[n >= 0 && n <= 1000 && acc == i && i <= n && i >= n][term >= 0]"),
             "exit must add the negation of the guard: {exit}"
         );
-        assert!(exit.contains("term acc;"), "term must be the returned value: {exit}");
+        assert!(
+            exit.contains("term acc;"),
+            "term must be the returned value: {exit}"
+        );
     }
 
     /// A loop body usually guards its update, and its bounds often name a local.
@@ -1728,7 +1741,10 @@ fn loop_params(params: &str, mutated: &[String], var: &str) -> String {
         params.split(", ").map(str::to_string).collect()
     };
     for local in mutated {
-        if !parts.iter().any(|part| part.starts_with(&format!("{local}:"))) {
+        if !parts
+            .iter()
+            .any(|part| part.starts_with(&format!("{local}:")))
+        {
             parts.push(format!("{local}: Int"));
         }
     }
@@ -1927,4 +1943,3 @@ fn collect_assigned_expr(expr: &syn::Expr, out: &mut Vec<String>) {
         _ => {}
     }
 }
-

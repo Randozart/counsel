@@ -323,10 +323,14 @@ mod masking_tests {
              #[post(term >= 0)]\nfn good(a: i64) -> i64 { a }\n",
         )
         .expect("parse");
-        let first = translate::translate_file(&file)
-            .expect_err("file-level translation is all-or-nothing");
+        let first =
+            translate::translate_file(&file).expect_err("file-level translation is all-or-nothing");
         let (defns, warnings) = translate_each(&file, first).expect("per-function retry");
-        assert_eq!(defns.len(), 1, "the good function should survive: {warnings:?}");
+        assert_eq!(
+            defns.len(),
+            1,
+            "the good function should survive: {warnings:?}"
+        );
         assert_eq!(defns[0].name, "good");
         assert!(
             warnings.iter().any(|warning| warning.contains("skipped")),
