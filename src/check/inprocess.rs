@@ -51,7 +51,36 @@ fn outcome_of(name: &str, report: &briev_verify::verify::BodyReport) -> Outcome 
 /// contracts are obligations.
 pub fn check_source(source: &str) -> Result<Report, Error> {
     let file = syn::parse_file(source).map_err(|e| Error::Parse(e.to_string()))?;
-    let items = build::definitions(&file)?;
+    // A single unsupported function must not hide the provable ones beside it, so
+    // each is built independently and a rejection becomes a warning. A file whose
+    // functions all fail still errors rather than reporting an empty pass.
+    let mut items = Vec::new();
+    let mut warnings = Vec::new();
+    let mut first_error: Option<Error> = None;
+    let mut contracted = 0usize;
+    for item in &file.items {
+        let syn::Item::Fn(item_fn) = item else {
+            continue;
+        };
+        if !build::has_contract(item_fn) {
+            continue;
+        }
+        contracted += 1;
+        match build::definition_for(item_fn) {
+            Ok(found) => items.extend(found),
+            Err(reason) => {
+                warnings.push(format!("skipped: {reason}"));
+                if first_error.is_none() {
+                    first_error = Some(reason);
+                }
+            }
+        }
+    }
+    if contracted > 0 && items.is_empty() {
+        return Err(first_error.unwrap_or(Error::Unsupported(
+            "no contracted function could be verified".to_string(),
+        )));
+    }
     if items.is_empty() {
         return Ok(Report::default());
     }
@@ -69,10 +98,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             }
         })
         .collect();
-    Ok(Report {
-        verdicts,
-        warnings: Vec::new(),
-    })
+    Ok(Report { verdicts, warnings })
 }
 
 #[cfg(test)]
@@ -93,7 +119,9 @@ mod tests {
     #[test]
     fn proves_a_true_identity() {
         assert_eq!(
-            verdicts("#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n"),
+            verdicts(
+                "#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n"
+            ),
             vec![("double".to_string(), Outcome::Proven)]
         );
     }
@@ -135,7 +163,10 @@ mod tests {
     #[test]
     fn proves_across_both_arms() {
         let source = "#[pre(a >= 0)]\n#[post(term >= 0)]\nfn abs_like(a: i64) -> i64 { if a < 0 { 0 - a } else { a } }\n";
-        assert_eq!(verdicts(source), vec![("abs_like".to_string(), Outcome::Proven)]);
+        assert_eq!(
+            verdicts(source),
+            vec![("abs_like".to_string(), Outcome::Proven)]
+        );
     }
 
     /// A supported method call desugars to the same guarded branches as before.
@@ -151,7 +182,10 @@ mod tests {
     #[test]
     fn proves_a_constant_bounded_loop() {
         let source = "#[post(term == 3)]\nfn sum_three() -> i64 { let mut acc = 0; for i in 0..3 { acc = acc + i; } acc }\n";
-        assert_eq!(verdicts(source), vec![("sum_three".to_string(), Outcome::Proven)]);
+        assert_eq!(
+            verdicts(source),
+            vec![("sum_three".to_string(), Outcome::Proven)]
+        );
     }
 
     /// A dynamic bound is refused rather than unrolled unsoundly.
@@ -161,7 +195,10 @@ mod tests {
             "#[post(term >= 0)]\nfn f(n: i64) -> i64 { let mut a = 0; for i in 0..n { a = a + 1; } a }\n",
         )
         .expect_err("dynamic bounds must be refused");
-        assert!(format!("{err}").contains("bounds must be integer literals"), "{err}");
+        assert!(
+            format!("{err}").contains("bounds must be integer literals"),
+            "{err}"
+        );
     }
 
     /// An invariant-carrying loop yields the three Hoare obligations, all proved.
@@ -178,7 +215,10 @@ mod tests {
     fn a_wrong_invariant_fails_at_entry() {
         let source = "#[pre(n >= 0 && n <= 1000)]\n#[post(term >= 0)]\n#[invariant(acc == i + 1 && i <= n)]\nfn count_bad(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + 1; } acc }\n";
         let seen = verdicts(source);
-        let init = seen.iter().find(|(n, _)| n == "count_bad_init").expect("init");
+        let init = seen
+            .iter()
+            .find(|(n, _)| n == "count_bad_init")
+            .expect("init");
         assert_eq!(init.1, Outcome::Violated, "{seen:?}");
     }
 
@@ -197,6 +237,9 @@ mod tests {
         // A loop is not built in-process yet, so this must be an error rather
         // than a silent pass.
         let err = check_source("#[post(term >= 0)]\nfn f(n: i64) -> i64 { let mut a = 0; for i in 0..n { a = a + 1; } a }\n");
-        assert!(err.is_err(), "an unbuilt construct must be refused, not proved");
+        assert!(
+            err.is_err(),
+            "an unbuilt construct must be refused, not proved"
+        );
     }
 }

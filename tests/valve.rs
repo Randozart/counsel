@@ -9,16 +9,9 @@
 
 use counsel::check::{check_source, Outcome, Report};
 
-/// Whether a Briev compiler with `--verify-bodies` is available.
-fn have_compiler() -> bool {
-    counsel::check::brievc::find_compiler().is_some()
-}
-
-/// Verify a snippet, skipping the test when no compiler is installed.
+/// Verify a snippet. No compiler is involved: the prover runs in process, so
+/// there is nothing to skip when it is absent.
 fn verify(source: &str) -> Option<Report> {
-    if !have_compiler() {
-        return None;
-    }
     Some(check_source(source).expect("verification should not error"))
 }
 
@@ -163,9 +156,6 @@ fn guarded_update_with_dynamic_bound_is_proven() {
 /// interpolate the whole syntax tree, which is accurate and unreadable.
 #[test]
 fn unsupported_construct_is_named_not_dumped() {
-    if !have_compiler() {
-        return;
-    }
     // `max`/`min`/`abs` are supported now, so the refusal must be tested with a
     // method that genuinely is outside the subset.
     let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.pow(2) }\n")

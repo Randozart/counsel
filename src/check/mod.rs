@@ -3,32 +3,21 @@
 // Counsel — static verification (the Phase 4 valve).
 //
 // Static pre/post-condition verification for a restricted pure-integer Rust
-// subset, discharged through Briev's own body prover (`--verify-bodies`,
-// briev-lang c0ce60dc). Declare contracts with plain attributes:
+// subset. The prover runs **in process**: `build` turns Rust syntax into the AST
+// that `briev-verify` walks, and `verify_bodies` returns the verdicts. There is
+// no compiler to find, download or version-pin, and no Briev source text.
 //
 //   #[pre(a >= 0)]
 //   #[post(term >= 0)]
 //   fn double(a: i64) -> i64 { a * 2 }
 //
-// The function is translated to a Briev `defn` and proved statically — no
-// runtime checks, no sampling, and no re-implementation of the prover here.
-//
-// Scope is deliberately narrow (i64 in/out, arithmetic, comparisons, `let`,
-// `if`/`else`, `return`, tail expression). Everything else is rejected as
-// unsupported: a wrong translation would be a wrong proof.
+// Scope is deliberately narrow. Everything outside it is rejected rather than
+// approximated: a wrong translation would be a wrong proof.
 
-pub mod brievc;
-pub mod translate;
-
-#[cfg(feature = "static-lib")]
 pub mod build;
-#[cfg(feature = "static-lib")]
 pub mod inprocess;
 
 use std::path::Path;
-
-pub use brievc::Discharge;
-pub use translate::TranslatedFn;
 
 /// Why a verification attempt could not produce verdicts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,14 +27,10 @@ pub enum Error {
     /// The function used a construct outside the pure-integer subset.
     Unsupported(String),
     /// A contract declaration itself is malformed (for example a duplicated
-    /// slot). Distinct from `Unsupported` so the message carries no subset
-    /// hint that would mislead.
+    /// slot). Distinct from `Unsupported` so the message carries no subset hint
+    /// that would mislead.
     Contract(String),
-    /// No `brievc` with `--verify-bodies` was found.
-    NoCompiler,
-    /// The Briev compiler rejected the translated program.
-    Compiler(String),
-    /// Filesystem or process failure.
+    /// Filesystem failure.
     Io(String),
 }
 
@@ -59,15 +44,10 @@ impl std::fmt::Display for Error {
                 "{why} — Counsel verifies a pure-integer subset: integer \
                  parameters and return (i8-i64, u8-u32, and u64/usize/isize with \
                  their range facts), integer arithmetic, comparisons, `let`, \
-                 `if`/`else`, `return`, and a trailing expression"
+                 `if`/`else`, `return`, constant `for` ranges or a loop with an \
+                 `#[invariant(...)]`, and a trailing expression"
             ),
             Error::Contract(why) => write!(f, "{why}"),
-            Error::NoCompiler => write!(
-                f,
-                "no `brievc` with --verify-bodies found — set BRIEVC to a Briev \
-                 compiler built from briev-lang c0ce60dc or later"
-            ),
-            Error::Compiler(why) => write!(f, "brievc failed:\n{why}"),
             Error::Io(why) => write!(f, "I/O error: {why}"),
         }
     }
@@ -103,8 +83,8 @@ pub struct FnVerdict {
 pub struct Report {
     /// One entry per contracted function, in source order.
     pub verdicts: Vec<FnVerdict>,
-    /// Advisory messages: renamed or misspelt contract attributes. A warning
-    /// never means "verified" — it means the attribute was not understood.
+    /// Advisory messages: functions skipped because they fall outside the
+    /// subset. A warning never means "verified" — it means nothing was proved.
     pub warnings: Vec<String>,
 }
 
@@ -133,65 +113,10 @@ impl Report {
 
 /// Verify the contracted functions in a Rust source string.
 ///
-/// Functions without `#[pre]`/`#[post]` are ignored — only written
-/// contracts are obligations.
-#[cfg(feature = "static-lib")]
+/// Functions without `#[pre]`/`#[post]`/`#[invariant]` are ignored — only
+/// written contracts are obligations.
 pub fn check_source(source: &str) -> Result<Report, Error> {
     inprocess::check_source(source)
-}
-
-/// Verify the contracted functions in a Rust source string.
-///
-/// Functions without `#[pre]`/`#[post]` are ignored — only written contracts are
-/// obligations.
-#[cfg(not(feature = "static-lib"))]
-pub fn check_source(source: &str) -> Result<Report, Error> {
-    let file = syn::parse_file(source).map_err(|e| Error::Parse(e.to_string()))?;
-    // A single unsupported function must not hide the others. `translate_file`
-    // is all-or-nothing (callers that want strictness keep using it), so on
-    // failure retry one function at a time and record each reject as a warning.
-    // Without this, one expressive body masked every provable body beside it.
-    let (translated, warnings) = match translate::translate_file(&file) {
-        Ok(pair) => pair,
-        Err(first) => translate_each(&file, first)?,
-    };
-    let discharge = brievc::discharge(&translated)?;
-    let mut report = assemble(&translated, &discharge);
-    report.warnings = warnings;
-    Ok(report)
-}
-
-/// Translate function by function, recording rejects instead of aborting.
-///
-/// Returns the original error when nothing at all could be translated, so a
-/// wholly unsupported file still fails rather than reporting an empty pass.
-fn translate_each(
-    file: &syn::File,
-    first: Error,
-) -> Result<(Vec<TranslatedFn>, Vec<String>), Error> {
-    let mut defns = Vec::new();
-    let mut warnings = Vec::new();
-    for item in &file.items {
-        if !matches!(item, syn::Item::Fn(_)) {
-            continue;
-        }
-        let single = syn::File {
-            shebang: None,
-            attrs: Vec::new(),
-            items: vec![item.clone()],
-        };
-        match translate::translate_file(&single) {
-            Ok((found, found_warnings)) => {
-                defns.extend(found);
-                warnings.extend(found_warnings);
-            }
-            Err(reason) => warnings.push(format!("skipped: {reason}")),
-        }
-    }
-    if defns.is_empty() {
-        return Err(first);
-    }
-    Ok((defns, warnings))
 }
 
 /// Verify the contracted functions in a Rust file.
@@ -201,28 +126,10 @@ pub fn check_file(path: &Path) -> Result<Report, Error> {
     check_source(&source)
 }
 
-/// Merge discharge results back onto the translated declarations.
-fn assemble(translated: &[TranslatedFn], discharge: &Discharge) -> Report {
-    let verdicts = translated
-        .iter()
-        .map(|decl| {
-            let outcome = classify(&decl.name, discharge);
-            FnVerdict {
-                name: display_name(&decl.name),
-                outcome,
-            }
-        })
-        .collect();
-    Report {
-        verdicts,
-        warnings: Vec::new(),
-    }
-}
-
 /// Readable name for a verdict: `<fn>__caseN` becomes `<fn> (case N)`.
 ///
-/// The generated defn name keeps the case distinguishable while checking; the
-/// report should speak about the function the author wrote.
+/// The generated definition name keeps the case distinguishable while checking;
+/// the report should speak about the function the author wrote.
 pub(crate) fn display_name(name: &str) -> String {
     match name.split_once("__case") {
         Some((base, index)) => format!("{base} (case {index})"),
@@ -230,42 +137,9 @@ pub(crate) fn display_name(name: &str) -> String {
     }
 }
 
-/// Classify one declaration from the discharge report.
-fn classify(name: &str, discharge: &Discharge) -> Outcome {
-    if discharge.violated.iter().any(|n| n == name) {
-        return Outcome::Violated;
-    }
-    if discharge.unproven.iter().any(|n| n == name) {
-        return Outcome::Unproven;
-    }
-    // A case defn is named `<fn>__caseN` and proves one concrete input only.
-    if name.contains("__case") {
-        return Outcome::ProvenForCase;
-    }
-    Outcome::Proven
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Whether a usable compiler is present for the integration-level tests.
-    fn have_compiler() -> bool {
-        brievc::find_compiler().is_some()
-    }
-
-    #[test]
-    fn classify_uses_the_three_way_report() {
-        let discharge = Discharge {
-            proven: vec!["a".into()],
-            unproven: vec!["b".into()],
-            violated: vec!["c".into()],
-            names_authoritative: false,
-        };
-        assert_eq!(classify("a", &discharge), Outcome::Proven);
-        assert_eq!(classify("b", &discharge), Outcome::Unproven);
-        assert_eq!(classify("c", &discharge), Outcome::Violated);
-    }
 
     #[test]
     fn report_helpers_split_outcomes() {
@@ -287,6 +161,22 @@ mod tests {
         assert!(report.unproven().is_empty());
     }
 
+    /// A case proves one input only, so it must never make a report green.
+    #[test]
+    fn a_case_is_not_a_general_proof() {
+        let report = check_source("#[case(0)]\n#[post(term == 0)]\nfn f(a: i64) -> i64 { 0 }\n")
+            .expect("check");
+        assert!(
+            report
+                .verdicts
+                .iter()
+                .any(|v| v.outcome == Outcome::ProvenForCase),
+            "{:?}",
+            report.verdicts
+        );
+        assert!(!report.all_proven());
+    }
+
     #[test]
     fn uncontracted_source_yields_empty_report() {
         let report = check_source("fn plain(a: i64) -> i64 { a }\n").expect("check");
@@ -294,17 +184,14 @@ mod tests {
     }
 
     #[test]
-    fn wrong_boundary_type_is_reported_without_running_the_compiler() {
-        let err = check_source("#[post(true)]\nfn f(a: u32) -> i64 { 0 }\n")
-            .expect_err("u32 must be rejected");
+    fn a_non_integer_boundary_type_is_rejected() {
+        let err = check_source("#[post(term >= 0)]\nfn f(a: String) -> i64 { 0 }\n")
+            .expect_err("a non-integer parameter must be rejected");
         assert!(matches!(err, Error::Unsupported(_)), "{err}");
     }
 
     #[test]
     fn proven_contract_is_discharged_statically() {
-        if !have_compiler() {
-            return;
-        }
         let report = check_source(
             "#[pre(a >= 0)]\n#[post(term == a + a)]\nfn double(a: i64) -> i64 { a + a }\n",
         )
@@ -314,43 +201,26 @@ mod tests {
 
     #[test]
     fn false_contract_is_caught_by_the_prover() {
-        if !have_compiler() {
-            return;
-        }
         let report =
             check_source("#[pre(a >= 0)]\n#[post(term == 0)]\nfn lies(a: i64) -> i64 { 5 }\n")
                 .expect("check");
         assert_eq!(report.verdicts[0].outcome, Outcome::Violated);
     }
-}
 
-#[cfg(test)]
-mod masking_tests {
-    use super::*;
-
-    /// One unsupported function must not hide a translatable one beside it.
-    ///
-    /// `translate_file` stays all-or-nothing (its callers want strictness); the
-    /// resilience lives in `check_source`, which retries per function.
+    /// One unsupported function must not hide a provable one beside it.
     #[test]
     fn a_bad_function_does_not_mask_a_good_one() {
-        let file = syn::parse_file(
+        let report = check_source(
             "#[post(term >= 0)]\nfn bad(a: i64) -> i64 { a[0] }\n\
              #[post(term >= 0)]\nfn good(a: i64) -> i64 { a }\n",
         )
-        .expect("parse");
-        let first =
-            translate::translate_file(&file).expect_err("file-level translation is all-or-nothing");
-        let (defns, warnings) = translate_each(&file, first).expect("per-function retry");
-        assert_eq!(
-            defns.len(),
-            1,
-            "the good function should survive: {warnings:?}"
-        );
-        assert_eq!(defns[0].name, "good");
+        .expect("the good function should still be verified");
+        assert_eq!(report.verdicts.len(), 1, "{:?}", report.verdicts);
+        assert_eq!(report.verdicts[0].name, "good");
         assert!(
-            warnings.iter().any(|warning| warning.contains("skipped")),
-            "the skip must be reported, not silent: {warnings:?}"
+            report.warnings.iter().any(|w| w.contains("skipped")),
+            "the skip must be reported, not silent: {:?}",
+            report.warnings
         );
     }
 }

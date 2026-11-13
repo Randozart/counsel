@@ -559,10 +559,7 @@ impl syn::visit_mut::VisitMut for SubstituteLoopVar<'_> {
 ///
 /// A variable trip count cannot be unrolled soundly, so it is refused rather
 /// than approximated — an invariant is the way to verify such a loop.
-fn unroll_loop(
-    for_loop: &syn::ExprForLoop,
-    out: &mut Vec<Statement>,
-) -> Result<(), Error> {
+fn unroll_loop(for_loop: &syn::ExprForLoop, out: &mut Vec<Statement>) -> Result<(), Error> {
     let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
         return Err(Error::Unsupported(
             "`for` loops are supported only with a plain loop variable".to_string(),
@@ -823,11 +820,7 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<To
     } else {
         (
             binary(BinaryOpKind::Lt, ident(&shape.var), shape.bound.clone()),
-            binary(
-                BinaryOpKind::Ge,
-                ident(&shape.var),
-                shape.bound.clone(),
-            ),
+            binary(BinaryOpKind::Ge, ident(&shape.var), shape.bound.clone()),
         )
     };
 
@@ -940,16 +933,18 @@ fn substitute_expr(node: &Expr, map: &[(String, i64)]) -> Expr {
 
 /// Replace parameters with their concrete case values in a built statement list.
 fn substitute_stmts(stmts: &[Statement], map: &[(String, i64)]) -> Vec<Statement> {
-    stmts.iter().map(|stmt| substitute_stmt(stmt, map)).collect()
+    stmts
+        .iter()
+        .map(|stmt| substitute_stmt(stmt, map))
+        .collect()
 }
 
 /// Replace parameters with their concrete case values in one statement.
 fn substitute_stmt(stmt: &Statement, map: &[(String, i64)]) -> Statement {
     match stmt {
-        Statement::Assign(target, value) => Statement::Assign(
-            substitute_expr(target, map),
-            substitute_expr(value, map),
-        ),
+        Statement::Assign(target, value) => {
+            Statement::Assign(substitute_expr(target, map), substitute_expr(value, map))
+        }
         Statement::Term(Some(value)) => Statement::Term(Some(substitute_expr(value, map))),
         Statement::Guarded(cond, body) => {
             Statement::Guarded(substitute_expr(cond, map), substitute_stmts(body, map))
@@ -1025,10 +1020,7 @@ fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
         let map: Vec<(String, i64)> = params.iter().cloned().zip(values.iter().copied()).collect();
         out.push(TopLevel::Definition(Definition::prover_defn(
             format!("{name}__case{index}"),
-            Contract::proven(
-                substitute_expr(&pre, &map),
-                substitute_expr(&post, &map),
-            ),
+            Contract::proven(substitute_expr(&pre, &map), substitute_expr(&post, &map)),
             substitute_stmts(&body, &map),
         )));
     }
@@ -1054,6 +1046,29 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
     ))])
 }
 
+/// Whether a function declares a contract worth proving.
+pub fn has_contract(item_fn: &syn::ItemFn) -> bool {
+    ["pre", "post", "invariant"]
+        .iter()
+        .any(|name| item_fn.attrs.iter().any(|attr| attr.path().is_ident(name)))
+}
+
+/// Build one function's definitions: the contract itself, plus any cases.
+///
+/// A loop contract expands into its obligations and takes no cases, whose
+/// generated signature would not match the function the author wrote.
+pub fn definition_for(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+    let is_loop = item_fn
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("invariant"));
+    let mut out = definition(item_fn)?;
+    if !is_loop {
+        out.extend(case_definitions(item_fn)?);
+    }
+    Ok(out)
+}
+
 /// Build every contracted function in a parsed Rust file.
 pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
     let mut out = Vec::new();
@@ -1061,20 +1076,10 @@ pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
         let syn::Item::Fn(item_fn) = item else {
             continue;
         };
-        let has_contract = ["pre", "post", "invariant"]
-            .iter()
-            .any(|name| item_fn.attrs.iter().any(|attr| attr.path().is_ident(name)));
-        if !has_contract {
+        if !has_contract(item_fn) {
             continue;
         }
-        let is_loop = item_fn
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("invariant"));
-        out.extend(definition(item_fn)?);
-        if !is_loop {
-            out.extend(case_definitions(item_fn)?);
-        }
+        out.extend(definition_for(item_fn)?);
     }
     Ok(out)
 }
