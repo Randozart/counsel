@@ -32,7 +32,7 @@ mod bindings;
 /// assert_eq!(double(3), 6);
 /// ```
 #[cfg(feature = "macros")]
-pub use counsel_macros::{case, post, pre};
+pub use counsel_macros::{case, invariant, post, pre};
 
 /// Static verification: translate a restricted pure-integer Rust subset and
 /// discharge its contracts through Briev's own body prover.
