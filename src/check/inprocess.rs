@@ -6,9 +6,9 @@
 // asked of the same prover, with no binary to locate, download or version-pin.
 
 use super::build;
-use super::{Error, FnVerdict, Outcome, Report};
-use super::prover::ast::Defn;
 use super::prover;
+use super::prover::ast::Defn;
+use super::{Error, FnVerdict, Outcome, Report};
 
 /// Whether a report entry names `name` — `"f: reason"` or a bare `"f"`.
 fn mentions(entry: &str, name: &str) -> bool {
@@ -159,6 +159,27 @@ mod tests {
         );
     }
 
+    /// A buffer-shaped parameter is admitted as opaque: the contract is about the
+    /// integers, and any actual use of the buffer in the body is still refused.
+    #[test]
+    fn a_buffer_parameter_is_admitted_as_opaque() {
+        let source = "#[pre(n >= 0)]\n#[post(term >= 0)]\n\
+                      fn passes(buffer: &[u8], n: i64) -> i64 { n }\n";
+        assert_eq!(
+            verdicts(source),
+            vec![("passes".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// Admitting the parameter must not admit its *contents*: an indexed use is
+    /// still outside the subset and is refused, not assumed.
+    #[test]
+    fn an_indexed_buffer_use_is_still_refused() {
+        let source = "#[post(term >= 0)]\n\
+                      fn reads(buffer: &[u8]) -> i64 { buffer[0] as i64 }\n";
+        assert!(check_source(source).is_err(), "indexing must stay refused");
+    }
+
     /// Domain facts still pin a narrow width: `u8` cannot exceed 255, so a body
     /// that only holds because of the range is provable.
     #[test]
@@ -269,7 +290,10 @@ mod tests {
             report.verdicts
         );
         assert!(
-            report.warnings.iter().any(|w| w.contains("a function call")),
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("a function call")),
             "{:?}",
             report.warnings
         );

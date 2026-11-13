@@ -9,8 +9,8 @@
 // The trade is that the compiler's typechecker no longer sees the result, so the
 // emitter must be right by construction rather than by validation.
 
-use super::Error;
 use super::prover::ast::{BinOp, Contract, Defn, Expr, Stmt, UnOp};
+use super::Error;
 
 /// An integer literal node.
 fn lit(value: i64) -> Expr {
@@ -225,10 +225,7 @@ fn method_terms(method: IntegerMethod) -> Vec<Stmt> {
                 binary(BinOp::Ge, a.clone(), lit(0)),
                 vec![Stmt::Term(Some(a.clone()))],
             ));
-            out.push(Stmt::Term(Some(Expr::Unary(
-                UnOp::Neg,
-                Box::new(a),
-            ))));
+            out.push(Stmt::Term(Some(Expr::Unary(UnOp::Neg, Box::new(a)))));
         }
     }
     out
@@ -493,16 +490,22 @@ fn signature_facts(name: &str, sig: &syn::Signature) -> Result<Vec<(String, Opti
                 "`{name}`: methods with `self` are not supported"
             )));
         };
-        let width = width_of(&pat_ty.ty).ok_or_else(|| {
-            Error::Unsupported(format!("`{name}`: parameter is not an integer type"))
-        })?;
+        // A parameter the integer model cannot represent — a slice, a pointer, a
+        // struct — is admitted as an **opaque** value: no domain fact, and any use
+        // of it in the body is still refused by the expression check (indexing,
+        // fields, reflection). So nothing is assumed about its contents; the
+        // declaration becomes checkable when its contract is about the integers.
+        let width = width_of(&pat_ty.ty);
         let syn::Pat::Ident(pat) = pat_ty.pat.as_ref() else {
             return Err(Error::Unsupported(format!(
                 "`{name}`: only plain identifier parameters are supported"
             )));
         };
         let ident = pat.ident.to_string();
-        facts.push((ident.clone(), domain_fact(&ident, width)));
+        facts.push((
+            ident.clone(),
+            width.and_then(|width| domain_fact(&ident, width)),
+        ));
     }
     if let syn::ReturnType::Type(_, ty) = &sig.output {
         if width_of(ty).is_none() {
@@ -783,11 +786,7 @@ fn entry_pins(
             expr(&init.expr, true)?,
         ));
     }
-    pins.push(binary(
-        BinOp::Eq,
-        ident(&shape.var),
-        shape.lower.clone(),
-    ));
+    pins.push(binary(BinOp::Eq, ident(&shape.var), shape.lower.clone()));
     Ok(pins)
 }
 
@@ -833,11 +832,7 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<De
     // VC2: the body preserves it, with the guard and the precondition available.
     let mut preserve_parts = pre.clone();
     preserve_parts.push(invariant.clone());
-    preserve_parts.push(binary(
-        BinOp::Ge,
-        ident(&shape.var),
-        shape.lower.clone(),
-    ));
+    preserve_parts.push(binary(BinOp::Ge, ident(&shape.var), shape.lower.clone()));
     preserve_parts.push(within);
     let preserve_pre = conjunction(preserve_parts).unwrap_or(Expr::Bool(true));
     let mut preserve_body = body;
@@ -1196,11 +1191,7 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
         .transpose()?
         .unwrap_or(Expr::Bool(true));
     let body = block(&item_fn.block.stmts)?;
-    Ok(vec![top_level(defn(
-        name,
-        proven(pre, post),
-        body,
-    ))])
+    Ok(vec![top_level(defn(name, proven(pre, post), body))])
 }
 
 /// Whether a function declares a contract worth proving.
