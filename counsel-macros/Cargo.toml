@@ -9,7 +9,7 @@
 
 [package]
 name = "counsel-macros"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Contract attributes for Counsel (#[pre], #[post], #[case]). They expand to nothing; Counsel reads the source text."
 license = "Apache-2.0 WITH LLVM-exception"
