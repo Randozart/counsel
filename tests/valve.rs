@@ -139,3 +139,39 @@ fn case_is_proven_at_its_input() {
         report.verdicts
     );
 }
+
+/// The dominant real-world loop shape: a bound naming a local, and an update
+/// guarded by an `if`. Both must reach the obligation's parameters, or the
+/// emitted defn names an undefined variable and the obligation is lost.
+#[test]
+fn guarded_update_with_dynamic_bound_is_proven() {
+    let Some(report) = verify(
+        "#[post(term >= 1)]\n#[invariant(best >= 1)]\nfn optimal_step_plain(len: usize) -> usize { let mut best = 1; let half = len / 2; for d in 1..=half { if len % d == 0 { best = d; } } best }\n",
+    ) else {
+        return;
+    };
+    assert_eq!(
+        report.verdicts.len(),
+        3,
+        "expected entry, preservation and exit: {:?}",
+        report.verdicts
+    );
+    assert!(report.all_proven(), "not proven: {:?}", report.verdicts);
+}
+
+/// A construct outside the subset is refused by name. The message used to
+/// interpolate the whole syntax tree, which is accurate and unreadable.
+#[test]
+fn unsupported_construct_is_named_not_dumped() {
+    if !have_compiler() {
+        return;
+    }
+    let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.max(1) }\n")
+        .expect_err("a method call is outside the subset");
+    let text = format!("{err}");
+    assert!(text.contains("a method call"), "expected a construct name: {text}");
+    assert!(
+        !text.contains("Expr::MethodCall"),
+        "the message must not dump the syntax tree: {text}"
+    );
+}

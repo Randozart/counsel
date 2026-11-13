@@ -399,7 +399,8 @@ fn translate_expr_stmt(
             Ok(())
         }
         other => Err(Error::Unsupported(format!(
-            "unsupported expression statement: {other:?}"
+            "unsupported statement (pure-integer subset): {}",
+            describe_expr(other)
         ))),
     }
 }
@@ -522,6 +523,37 @@ fn strip_parens(expr: &syn::Expr) -> &syn::Expr {
 ///
 /// `allow_ident` permits bare identifiers (contracts and bodies both need
 /// them; kept as a parameter so the intent is explicit at call sites).
+/// Name the construct that fell outside the subset.
+///
+/// The message used to interpolate `{expr:?}`, which printed the whole syntax
+/// tree — technically accurate and useless to a reader. Naming the construct
+/// says what to change instead.
+fn describe_expr(expr: &syn::Expr) -> &'static str {
+    match expr {
+        syn::Expr::MethodCall(_) => "a method call",
+        syn::Expr::Call(_) => "a function call",
+        syn::Expr::Field(_) => "field access",
+        syn::Expr::Index(_) => "indexing",
+        syn::Expr::Match(_) => "a `match` expression",
+        syn::Expr::Closure(_) => "a closure",
+        syn::Expr::Struct(_) => "a struct literal",
+        syn::Expr::Array(_) => "an array literal",
+        syn::Expr::Tuple(_) => "a tuple",
+        syn::Expr::Reference(_) => "a reference",
+        syn::Expr::Range(_) => "a range expression",
+        syn::Expr::Cast(_) => "a cast",
+        syn::Expr::Try(_) => "the `?` operator",
+        syn::Expr::Await(_) => "`.await`",
+        syn::Expr::Assign(_) => "an assignment in a position without a name to bind",
+        other => {
+            // Variants are listed explicitly where a reader would act on them;
+            // the rest share one honest answer rather than an AST dump.
+            let _ = other;
+            "an expression outside the integer subset"
+        }
+    }
+}
+
 fn translate_expr(expr: &syn::Expr, allow_ident: bool) -> Result<String, Error> {
     match expr {
         syn::Expr::Lit(lit) => translate_lit(lit),
@@ -530,7 +562,8 @@ fn translate_expr(expr: &syn::Expr, allow_ident: bool) -> Result<String, Error> 
         syn::Expr::Unary(unary) => translate_unary(unary, allow_ident),
         syn::Expr::Paren(paren) => Ok(format!("({})", translate_expr(&paren.expr, allow_ident)?)),
         other => Err(Error::Unsupported(format!(
-            "unsupported expression (pure-integer subset): {other:?}"
+            "unsupported expression (pure-integer subset): {}",
+            describe_expr(other)
         ))),
     }
 }

@@ -17,7 +17,7 @@
 
 [package]
 name = "counsel"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Static and runtime pre/post-condition verification for Rust: the predicate core is authored in Briev and compiled to native, while contracts are discharged by Briev's own body prover. Lighter than Kani."
 license = "Apache-2.0 WITH LLVM-exception"
