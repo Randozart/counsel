@@ -393,6 +393,20 @@ fn translate_expr_stmt(
         syn::Expr::ForLoop(for_loop) => translate_for(for_loop, out),
         // Plain rebinding: `x = expr;` — the accumulator a loop needs.
         syn::Expr::Assign(assign) => translate_assign(assign, out),
+        // `a.max(b)` in value position: Briev has no expression-level
+        // conditional, so the value becomes guarded `term` statements.
+        syn::Expr::MethodCall(call) if no_semi && is_last => {
+            match desugar_integer_method(call) {
+                Some(method) => {
+                    emit_method_terms(&method, out);
+                    Ok(())
+                }
+                None => Err(Error::Unsupported(format!(
+                    "unsupported expression (pure-integer subset): {}",
+                    describe_expr(expr)
+                ))),
+            }
+        }
         // A trailing expression is the function's value.
         other if no_semi && is_last => {
             out.push(format!("term {};", translate_expr(other, true)?));
@@ -482,7 +496,7 @@ fn translate_branch(expr: &syn::Expr) -> Result<String, Error> {
     match expr {
         syn::Expr::Block(block) => translate_block(&block.block.stmts),
         syn::Expr::If(node) => translate_if(node),
-        other => Ok(format!("term {};", translate_expr(other, true)?)),
+        other => value_statements(other),
     }
 }
 
@@ -1333,9 +1347,156 @@ fn translate_assign(assign: &syn::ExprAssign, out: &mut Vec<String>) -> Result<(
             "assignment target must be a plain name".to_string(),
         ));
     };
+    if let syn::Expr::MethodCall(call) = assign.right.as_ref() {
+        let method = desugar_integer_method(call).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "unsupported expression (pure-integer subset): {}",
+                describe_expr(&assign.right)
+            ))
+        })?;
+        emit_method_assign(&method, &ident.to_string(), out);
+        return Ok(());
+    }
     let value = translate_expr(&assign.right, true)?;
     out.push(format!("{ident} = {value};"));
     Ok(())
+}
+
+/// An integer method call expanded into its branch structure.
+enum IntegerMethod {
+    /// `a.max(b)`
+    Max(String, String),
+    /// `a.min(b)`
+    Min(String, String),
+    /// `a.abs()`
+    Abs(String),
+}
+
+/// Translate a value expression into statements, desugaring supported integer
+/// method calls into guarded `term`s.
+///
+/// Positions that build text directly — a loop-exit tail, an `if` branch value —
+/// do not pass through the statement translator, so they need this.
+fn value_statements(expr: &syn::Expr) -> Result<String, Error> {
+    if let syn::Expr::MethodCall(call) = expr {
+        let method = desugar_integer_method(call).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "unsupported expression (pure-integer subset): {}",
+                describe_expr(expr)
+            ))
+        })?;
+        let mut out = Vec::new();
+        emit_method_terms(&method, &mut out);
+        return Ok(out.join("\n    "));
+    }
+    Ok(format!("term {};", translate_expr(expr, true)?))
+}
+
+/// Recognise `a.max(b)`, `a.min(b)` and `a.abs()`, and only those arities.
+///
+/// Briev has no expression-level conditional, and its verifier silently skips
+/// any body containing a call — so a helper `defn` cannot express these. The call
+/// has to become `when` statements here, which is the machinery the rest of the
+/// translator already discharges.
+fn desugar_integer_method(call: &syn::ExprMethodCall) -> Option<IntegerMethod> {
+    let receiver = translate_expr(&call.receiver, true).ok()?;
+    let argument = || translate_expr(&call.args[0], true).ok();
+    match (call.method.to_string().as_str(), call.args.len()) {
+        ("max", 1) => Some(IntegerMethod::Max(receiver, argument()?)),
+        ("min", 1) => Some(IntegerMethod::Min(receiver, argument()?)),
+        ("abs", 0) => Some(IntegerMethod::Abs(receiver)),
+        _ => None,
+    }
+}
+
+/// Emit the value of a recognised method call as guarded `term` statements.
+fn emit_method_terms(method: &IntegerMethod, out: &mut Vec<String>) {
+    let text = match method {
+        IntegerMethod::Max(a, b) => format!("when {a} >= {b} {{ term {a}; }};\n    term {b};"),
+        IntegerMethod::Min(a, b) => format!("when {a} <= {b} {{ term {a}; }};\n    term {b};"),
+        IntegerMethod::Abs(a) => format!("when {a} >= 0 {{ term {a}; }};\n    term 0 - {a};"),
+    };
+    out.push(text);
+}
+
+/// Emit a recognised method call assigned to a plain name.
+fn emit_method_assign(method: &IntegerMethod, target: &str, out: &mut Vec<String>) {
+    let text = match method {
+        IntegerMethod::Max(a, b) => {
+            format!("{target} = {a};\n    when {b} > {a} {{ {target} = {b}; }};")
+        }
+        IntegerMethod::Min(a, b) => {
+            format!("{target} = {a};\n    when {b} < {a} {{ {target} = {b}; }};")
+        }
+        IntegerMethod::Abs(a) => format!("{target} = {a};\n    when {a} < 0 {{ {target} = 0 - {a}; }};"),
+    };
+    out.push(text);
+}
+
+#[cfg(test)]
+mod method_call_tests {
+    use super::*;
+
+    /// Translate one function and return its emitted Briev text.
+    fn briev_for(source: &str) -> String {
+        let file = syn::parse_file(source).expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        out[0].briev.clone()
+    }
+
+    /// `max` becomes a guarded `term`, because Briev has no expression-level
+    /// conditional and a helper defn containing a call is skipped by the prover.
+    #[test]
+    fn max_in_value_position_becomes_guarded_terms() {
+        let briev = briev_for("#[post(term >= 0)]\nfn f(a: i64, b: i64) -> i64 { a.max(b) }\n");
+        assert!(briev.contains("when a >= b { term a; }"), "{briev}");
+        assert!(briev.contains("term b;"), "{briev}");
+    }
+
+    /// `min` assigned to a name becomes an unconditional bind plus a guarded one.
+    #[test]
+    fn min_in_assignment_position_becomes_a_guarded_rebinding() {
+        let briev = briev_for(
+            "#[post(term >= 0)]\nfn f(a: i64, b: i64) -> i64 { let mut x = 0; x = a.min(b); x }\n",
+        );
+        assert!(briev.contains("x = a;"), "{briev}");
+        assert!(briev.contains("when b < a { x = b; }"), "{briev}");
+    }
+
+    /// `abs` needs no argument and splits on the sign.
+    #[test]
+    fn abs_becomes_a_sign_split() {
+        let briev = briev_for("#[post(term >= 0)]\nfn f(a: i64) -> i64 { a.abs() }\n");
+        assert!(briev.contains("when a >= 0 { term a; }"), "{briev}");
+        assert!(briev.contains("term 0 - a;"), "{briev}");
+    }
+
+    /// A loop-exit tail reaches the desugaring too, even though it is built as
+    /// text rather than through the statement translator.
+    #[test]
+    fn loop_exit_tail_desugars_a_method_call() {
+        let file = syn::parse_file(
+            "#[post(term >= 1)]\n#[invariant(best >= 1)]\nfn f(len: usize) -> usize { let mut best = 1; let half = len / 2; for d in 1..=half { if len % d == 0 { best = d; } } best.max(1) }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("translate");
+        let exit = out
+            .iter()
+            .find(|defn| defn.name == "f_exit")
+            .expect("exit obligation");
+        assert!(exit.briev.contains("when best >= 1 { term best; }"), "{}", exit.briev);
+    }
+
+    /// A method outside the whitelist is still refused, and named.
+    #[test]
+    fn unsupported_method_is_refused_by_name() {
+        let file = syn::parse_file("#[post(term >= 0)]\nfn f(a: i64) -> i64 { a.pow(2) }\n")
+            .expect("parse");
+        let err = translate_file(&file).expect_err("pow is outside the subset");
+        let text = format!("{err}");
+        assert!(text.contains("a method call"), "{text}");
+        assert!(!text.contains("Expr::MethodCall"), "must not dump the AST: {text}");
+    }
 }
 
 #[cfg(test)]
@@ -1547,7 +1708,7 @@ fn loop_shape(item_fn: &syn::ItemFn) -> Result<LoopShape, Error> {
             closed: matches!(range.limits, syn::RangeLimits::Closed(_)),
             at,
             body: for_loop.body.stmts.clone(),
-            tail: translate_expr(tail, true)?,
+            tail: value_statements(tail)?,
         });
     }
     Err(Error::Unsupported(
@@ -1662,7 +1823,7 @@ fn translate_loop_contracts(
         "defn {name}_preserve({all}) [{pre_text}{invariant} && {var} >= {lower} && {within}][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n"
     );
     let exit = format!(
-        "defn {name}_exit({all}) [{pre_text}{invariant} && {past}][{post}] -> Int {{\n    term {};\n}};\n",
+        "defn {name}_exit({all}) [{pre_text}{invariant} && {past}][{post}] -> Int {{\n    {}\n}};\n",
         shape.tail
     );
     Ok(vec![

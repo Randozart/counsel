@@ -166,8 +166,10 @@ fn unsupported_construct_is_named_not_dumped() {
     if !have_compiler() {
         return;
     }
-    let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.max(1) }\n")
-        .expect_err("a method call is outside the subset");
+    // `max`/`min`/`abs` are supported now, so the refusal must be tested with a
+    // method that genuinely is outside the subset.
+    let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.pow(2) }\n")
+        .expect_err("a method call outside the whitelist has no translation");
     let text = format!("{err}");
     assert!(text.contains("a method call"), "expected a construct name: {text}");
     assert!(
