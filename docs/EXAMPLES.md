@@ -191,7 +191,51 @@ about a function the prover cannot see.
 
 ---
 
-## 6. From a test
+## 6. Static proof: a loop, proved in three obligations
+
+A `for` loop carrying `#[invariant(...)]` is **not** unrolled. It becomes three
+loop-free obligations, all discharged by the same solver:
+
+```rust
+#[pre(n >= 0 && n <= 1000)]
+#[post(term >= 0)]
+#[invariant(acc == i && i <= n)]
+pub fn count(n: i64) -> i64 {
+    let mut acc = 0;
+    for i in 0..n {
+        acc = acc + 1;
+    }
+    acc
+}
+```
+
+```
+count_init        proven
+count_preserve    proven
+count_exit        proven
+```
+
+`_init` shows the invariant holds on entry, `_preserve` that the body keeps it,
+`_exit` that it is enough to meet `#[post]`. **All three are required** — a
+partial set proves nothing about the function, and a wrong invariant is caught at
+the obligation it actually breaks:
+
+```
+count_bad_init    VIOLATED     // acc == i + 1 is false at entry
+count_bad_preserve proven      // valid, but only conditional on the premise
+count_bad_exit     proven
+```
+
+`Int` is a **wrapping** 64-bit bitvector, so an invariant must bound the values it
+reasons about (a bare `acc >= 0` is not preserved — it can wrap) and must survive
+the growth step. `n <= 1000` in `#[pre]` is what makes `acc == i && i <= n`
+provable.
+
+Integer methods `a.max(b)`, `a.min(b)` and `a.abs()` are supported; they desugar
+into guarded branches, so a loop may end in `best.max(1)`. Any other method is
+refused by name rather than approximated.
+
+## 7. From a test
 
 ```rust
 use counsel::check::{check_source, Outcome};
@@ -217,7 +261,7 @@ does not compile your crate. `#[pre]`/`#[post]`/`#[case]` are re-exported from
 
 ---
 
-## 7. Runtime checks (`counsel`)
+## 8. Runtime checks (`counsel`)
 
 The other half answers "did the obligation hold for *this* input?" — with the
 truth values computed by Briev-compiled native code.
@@ -253,7 +297,7 @@ correct, but not the part this crate is exercising.
 
 ---
 
-## 8. What each outcome means for your build
+## 9. What each outcome means for your build
 
 | Outcome | Build impact | Meaning | What to do |
 |---|---|---|---|
