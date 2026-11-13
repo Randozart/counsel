@@ -175,11 +175,22 @@ passed through unchanged.
 
 Accepted: integer parameters and return (any width, with domain facts), integer literals, identifiers, unary
 `-`/`!`, arithmetic `+ - * / %`, comparisons, `&&`/`||`, `let`, `if`/`else`,
-`return`, a trailing expression, and `#[pre]`/`#[post]`.
+`return`, a trailing expression, bare-name assignment `x = expr`, calls to
+precondition-free functions (inlined before translation), `for` loops over
+constant integer ranges (unrolled, at most 64 iterations), and
+`#[pre]`/`#[post]`/`#[invariant]`.
 
-Rejected with `Error::Unsupported` (never approximated): calls, method calls,
-field access, indexing, slicing, ranges, loops, `match`, pattern `let`s,
-`self` methods, non-integer types, generics with arguments, `async`, and calls to callees that are not pure and precondition-free.
+A `for` loop carrying `#[invariant(...)]` is not unrolled. It becomes three
+loop-free defns — `<fn>_init`, `<fn>_preserve`, `<fn>_exit` — whose conjunction
+is the loop's correctness: the invariant holds on entry, the body preserves it,
+and the exit state meets the postcondition. The same solver discharges all
+three. A loop is reported proved only when all three are.
+
+Rejected with `Error::Unsupported` (never approximated): method calls, field
+access, indexing, slicing, standalone range expressions, `match`, pattern
+`let`s, `self` methods, non-integer types, generics with arguments, `async`,
+`for` loops whose bounds are neither constant nor covered by an invariant, and
+calls to callees that are impure or carry a precondition.
 
 Rationale: a wrong translation would be a wrong proof.
 
