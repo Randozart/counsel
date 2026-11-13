@@ -20,6 +20,11 @@
 pub mod brievc;
 pub mod translate;
 
+#[cfg(feature = "static-lib")]
+pub mod build;
+#[cfg(feature = "static-lib")]
+pub mod inprocess;
+
 use std::path::Path;
 
 pub use brievc::Discharge;

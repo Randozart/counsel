@@ -34,10 +34,14 @@ default = ["macros"]
 macros = ["dep:counsel-macros"]
 # Static verification of a restricted pure-integer Rust subset.
 static = ["dep:syn", "dep:serde_json"]
+# In-process verification through the briev-verify library: no subprocess, no
+# pinned toolchain. Experimental until it reaches parity with `static`.
+static-lib = ["static", "dep:briev-verify"]
 
 [dependencies]
 counsel-macros = { version = "0.1", path = "counsel-macros", optional = true }
 serde_json = { version = "1", optional = true }
+briev-verify = { path = "../briev-lang/briev-verify", optional = true }
 syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit", "visit-mut"], optional = true }
 
 [[bin]]
