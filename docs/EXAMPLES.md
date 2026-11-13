@@ -1,8 +1,7 @@
 # Counsel — Examples
 
-Worked end-to-end walks through both halves. Every compiler output below is
-copied verbatim from a real run (`brievc` built from `briev-lang` `c0ce60dc`),
-not paraphrased.
+Worked end-to-end walks through both halves. Every verdict and reason below comes
+from a real run of the in-process prover, not paraphrased.
 
 ---
 
@@ -16,7 +15,7 @@ Rust source (what you write):
 fn double(a: i64) -> i64 { a + a }
 ```
 
-Generated Briev (what Counsel emits for the prover):
+Equivalent Briev (the prover's own syntax; Counsel builds this AST directly):
 
 ```briev
 defn double(a: Int) [a >= 0][term == a + a] -> Int {
@@ -27,8 +26,7 @@ defn double(a: Int) [a >= 0][term == a + a] -> Int {
 Result:
 
 ```
-$ brievc build double.bv --library --verify-bodies --out out/
-exit 0            # no line mentions `double`
+prover report: 1 proven, 0 unproven, 0 violated
 ```
 
 Outcome:
@@ -64,10 +62,8 @@ defn lies(a: Int) [a >= 0][term == 0] -> Int {
 Result (verbatim):
 
 ```
-$ brievc build lies.bv --library --verify-bodies --out out/
-error: --verify-bodies:
+prover report: 1 violated
 lies: body can violate its postcondition: a path returns term = 5, which contradicts the contract
-exit 1
 ```
 
 Outcome:
@@ -103,9 +99,8 @@ defn scale(a: Int) [true][term == a * a] -> Int {
 Result (verbatim):
 
 ```
-$ brievc build scale.bv --library --verify-bodies --out out/
-warning: --verify-bodies could not prove: scale: could not prove the postcondition on 1 path(s) — add a guard or a stronger precondition
-exit 0
+prover report: 1 unproven
+scale: could not prove the postcondition on 1 path(s) — add a guard or a stronger precondition
 ```
 
 Outcome:
@@ -305,77 +300,15 @@ correct, but not the part this crate is exercising.
 | `Unproven` | passes, warns | decidable body, undecided obligation | strengthen the pre/guard, simplify the post |
 | `Violated` | **fails** | a concrete counterexample exists | fix the body or the contract |
 | `Error::Unsupported` | fails | construct outside the pure-integer subset | rewrite, or verify by hand |
-| `Error::NoCompiler` | fails | no `brievc` with `--verify-bodies` found | set `BRIEVC` |
 
 ---
 
 ## Reproduce
 
 ```bash
-# The three static verdicts, directly against the compiler:
-cd /tmp && mkdir -p ex && cd ex
-BRIEVC=/path/to/brievc   # a build of briev-lang c0ce60dc or later
-
-printf 'defn double(a: Int) [a >= 0][term == a + a] -> Int {\n    term a + a;\n};\n' \
-  > proven.bv
-"$BRIEVC" build proven.bv --library --verify-bodies --out out-proven     # exit 0
-
-printf 'defn lies(a: Int) [a >= 0][term == 0] -> Int {\n    term 5;\n};\n' \
-  > violated.bv
-"$BRIEVC" build violated.bv --library --verify-bodies --out out-violated # exit 1
-
-printf 'defn scale(a: Int) [true][term == a * a] -> Int {\n    term a * 2;\n};\n' \
-  > unproven.bv
-"$BRIEVC" build unproven.bv --library --verify-bodies --out out-unproven # exit 0, warning
+cargo test --features static                       # the whole static suite
+cargo run --features static --bin counsel-check -- src/lib.rs
 ```
 
-```bash
-# Through the crate's own API:
-cd counsel-crate
-BRIEVC=/path/to/brievc cargo test --features static   # translator + real prover
-BRIEVC=/path/to/brievc cargo test -p counsel          # builds + links Briev machinery
-```
-
----
-
-## 9. Intended cases (`#[case]`)
-
-`#[post]` says what must hold for *every* input. `#[case]` pins inputs you
-actually care about, so the prover can give a definite answer instead of
-`Unproven`:
-
-```rust
-#[pre(a >= 0)]
-#[post(term == 2 * a)]
-#[case(5)]
-fn double(a: i64) -> i64 { a + a }
-```
-
-The general goal is undecidable by structure here (`a + a` versus `2 * a`), so
-the translator also emits the contract instantiated at the case's input:
-
-```briev
-defn double__case0() [5 >= 0][term == 2 * 5] -> Int { term 5 + 5; };
-```
-
-which the prover collapses to constants and decides.
-
-| Verdict | Meaning |
-|---|---|
-| `Proven` | symbolic: every path satisfies `#[post]` |
-| `ProvenForCase` | satisfied **at that input only** — reported as `double (case 0)` |
-| `Violated` | a concrete counterexample exists |
-| `Unproven` | decidable body, undecided obligation |
-
-`Report::all_proven()` counts only symbolic `Proven`, so a case can never make a
-report green.
-
-Two deliberate refusals: a case whose arity does not match the parameters is a
-contract error, and a function that rebinds a parameter (`let a = 1;`) rejects
-cases outright — the substitution is textual, and guessing would be worse than
-refusing.
-
-Syntax notes: `#[case(5)]` for one parameter, `#[case((2, 3))]` for several.
-There is no `=> expected` form: an expectation that cannot be checked would be a
-silent weakness. The expectation comes from `#[post]`, which *is* proved at that
-input.
+No compiler is involved: the prover is the `briev-verify` crate and runs in the
+same process.

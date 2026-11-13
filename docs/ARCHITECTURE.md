@@ -24,15 +24,16 @@ reported as a pass.
                     counsel::check: Rust source text
                                               │  syn parse + subset check
                                               ▼
-                     Briev `defn` source (generated)
-                                              │  brievc --verify-bodies
+              briev_verify::ast (built directly, in process)
+                                              │  verify_bodies
                                               ▼
                           Proven / Unproven / Violated
 ```
 
 The runtime half is **ordinary Rust**: no build script, no native library, no
-download. The static half **generates** Briev source and asks Briev's own prover
-about it, resolving a compiler on first use. Neither half re-implements a prover.
+download. The static half builds the prover's AST nodes directly and calls
+Briev's prover in the same process — no compiler, no subprocess, no pinned
+toolchain. Neither half re-implements a prover.
 
 ### Who owns what
 
@@ -120,14 +121,11 @@ the first divergence with input, expected and actual.
 check_source(&str)                     (or check_file(&Path))
   │
   ├─ syn::parse_file                     parse Rust
-  ├─ translate::translate_file           keep only fns with #[pre]/#[post]
-  │    └─ per fn: translate_params → translate_block → assemble defn text
-  ├─ brievc::discharge                   run the Briev prover
-  │    ├─ find_compiler()                $BRIEVC → PATH → sibling briev-lang builds
-  │    ├─ write all defns to one temp .bv
-  │    ├─ brievc build <file> --library --verify-bodies
-  │    └─ parse_report(stderr)           → proven / unproven / violated
-  └─ assemble → Report { verdicts }      classify per declaration
+  ├─ build::definition_for               per fn: parameters + domain facts,
+  │    ├─ loop invariants → _init/_preserve/_exit
+  │    └─ #[case(..)] instantiates at concrete inputs
+  ├─ verify_bodies(&items)               run the prover in process
+  └─ classify per definition             proven / unproven / violated / case
 ```
 
 `Report` exposes `all_proven()`, `violated()` and `unproven()`.
@@ -179,32 +177,28 @@ Rationale: a wrong translation would be a wrong proof.
 
 ### 3.4 Discharge and classification
 
-The compiler is **discovered, not assumed**: each candidate is accepted only if
-its `--help` advertises `--verify-bodies` (a stale build is skipped rather than
-mis-invoked). Candidates: `$BRIEVC`, `brievc` on PATH, sibling
-`briev-lang/target/{debug,release}/brievc`.
+`verify_bodies` runs in process and returns a `BodyReport` with three lists:
+what it proved, what it could not decide, and what it refuted.
 
-Verdicts are read from the compiler's stderr:
-
-| Observed line | Outcome |
+| Report list | Outcome |
 |---|---|
-| `<name>: body can violate its postcondition: …` (inside an `error: --verify-bodies:` block) | `Violated` |
-| `warning: --verify-bodies could not prove: <name>: …` | `Unproven` |
-| neither line mentions `<name>` | `Proven` |
+| `violated` | `Violated` |
+| `unproven` | `Unproven` |
+| `proven` | `Proven`, or `ProvenForCase` for a `<fn>__caseN` instantiation |
+| none of them | `Unproven` — the prover never examined it |
 
-Exit status handling: a non-zero exit **without** violation lines is surfaced
-as `Error::Compiler` — a genuine failure, never an invented verdict.
-
-Advisory warnings about *stdlib* declarations (e.g. `coll_min`, `exponent_val`)
-appear in every run and are ignored, because classification only ever asks
-about the translated names.
+The last row is the point. A definition named nowhere was skipped, and silence is
+never a proof, so classification never infers `Proven` from absence. There is no
+prose to parse: the verdicts are a typed structure, so a change in wording cannot
+silently turn a violation into a proof.
 
 ---
 
-## 4. Under the hood: Briev's `--verify-bodies`
+## 4. Under the hood: Briev's body prover
 
-Lives in `briev-lang/src/analysis/verify_bodies.rs` (commit `c0ce60dc`), wired
-into the compile pipeline behind the flag.
+Lives in the `briev-verify` crate (`src/verify.rs`), extracted from the compiler
+so it can be used without it; the compiler consumes the same code through a
+re-export, so there is one implementation.
 
 - **Path walk:** a worklist over statement blocks; each `when` guard forks into
   taken (guard added as a fact) and fall-through (negation added).
@@ -243,7 +237,7 @@ counts as a pass.
 | Static proof needs no runtime execution | Yes |
 | Full Rust support | **No** — integer subset only; any integer width (i8-i64, u8-u32, u64/usize/isize), and calls resolve when the callee is pure and precondition-free |
 | Deciding every true contract | **No** — bounds + Z3 when installed; parameter-dependent goals stay advisory |
-| Works without a Briev compiler | **No** — `brievc` required at check time |
+| Works without a Briev compiler | **Yes** — the prover is a Rust library, no binary and no download |
 
 ---
 
@@ -252,8 +246,8 @@ counts as a pass.
 | Path | Contents |
 |---|---|
 | `src/lib.rs` | runtime checks, sampler, predicate dispatch (pure Rust) |
-| `src/check/translate.rs` | Rust → Briev source |
-| `src/check/brievc.rs` | compiler discovery + discharge + report parsing |
+| `src/check/build.rs` | Rust syntax → prover AST (loops, invariants, cases) |
+| `src/check/inprocess.rs` | `verify_bodies` → `Report` |
 | `src/check/mod.rs` | `Outcome`, `Report`, `check_source`, `check_file` |
 | `tests/smoke.rs`, `tests/valve.rs` | executable specification |
 | `BUGS.md` | the cross-ABI callback blocker and the Briev codegen bug |
@@ -265,7 +259,7 @@ counts as a pass.
 # Runtime half: plain Rust, no compiler involved
 cargo test -p counsel
 
-# Static half: drives the real prover (fetches a pinned brievc if absent)
+# Static half: drives the real prover in process (no compiler involved)
 cargo test --features static
 
 # Whole workspace (counsel + the attribute companion)

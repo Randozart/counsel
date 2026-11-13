@@ -40,18 +40,14 @@ src/lib.rs   ← contract, verify, satisfies, checks: ordinary Rust
 `#[pre]`/`#[post]`/`#[invariant]` are inert markers from the `counsel-macros`
 proc-macro crate. There is no build script, no native library and no download.
 
-### Static (`--features static`) — Briev's prover
+### Static (`--features static`) — Briev's prover, in process
 
 ```
-Rust source ──syn──> translate to Briev `defn`s ──> brievc --verify-bodies
-t                                                        │
-                                                  typed verdicts
+Rust source ──syn──> briev_verify::ast ──> verify_bodies ──> typed verdicts
 ```
 
-A `brievc` binary is resolved on first use: `$BRIEVC`, else a previously fetched
-pinned toolchain in the cache, else `brievc` on `PATH`, else a sibling
-`briev-lang` checkout, else the pinned release is downloaded once and
-sha256-verified. Set `COUNSEL_NO_DOWNLOAD=1` to forbid the fetch.
+No compiler, no subprocess, no download. The prover is the `briev-verify` crate:
+Counsel builds the AST nodes directly and calls it in the same process.
 
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
@@ -65,10 +61,10 @@ counsel = "0.1"                                        # runtime API + attribute
 counsel = { version = "0.1", features = ["static"] }   # + static verification
 ```
 
-| Feature | Gives you | Needs a Briev compiler |
+| Feature | Gives you | Needs Briev |
 |---|---|---|
 | `macros` (default) | `#[pre]`/`#[post]`/`#[invariant]` accepted by rustc | no |
-| `static` | the `counsel::check` API and the `counsel-check` binary | **yes, at check time** (fetched once, or set `BRIEVC`) |
+| `static` | the `counsel::check` API and the `counsel-check` binary | only the `briev-verify` crate — ordinary Rust, compiled in |
 
 `counsel-macros` is a separate crate only because Rust requires
 `proc-macro = true` crates to stand alone; `counsel` re-exports its attributes,
@@ -80,49 +76,18 @@ Enforcement comes from `counsel-check` (static) or `contract()` (runtime).
 `counsel` (the **runtime half**) needs nothing. It is plain Rust: no build
 script, no native library, no compiler, no download.
 
-The **static half** (`--features static`) needs a `brievc` binary **at check
-time**. `counsel::check` resolves one on first use, in this order:
-
-1. `BRIEVC` — an explicit binary (dev loop, CI, air-gapped)
-2. the pinned release cache — extracted once, then reused offline
-3. `brievc` on `PATH` — a locally installed compiler
-4. a sibling `briev-lang` checkout
-5. the pinned GitHub release — downloaded, **sha256-verified**, extracted
+The **static half** (`--features static`) needs nothing either. It adds the
+`briev-verify` crate — ordinary Rust compiled into your build — so there is no
+binary to find, fetch, checksum or version-pin.
 
 ```bash
-cargo test --features static   # first check fetches brievc (~48 MB) into the cache
+cargo test --features static
 ```
-
-The cache lives at `$XDG_CACHE_HOME/counsel` (or `~/.cache/counsel`); override it
-with `COUNSEL_CACHE_DIR`, or set `COUNSEL_NO_DOWNLOAD=1` to forbid fetching
-entirely (useful in sandboxes — you then must supply option 1 or 3).
-
-The bundle carries the compiler **and its resource tree** (`lib/`, `config/`,
-`glue/`, `std/`, `spec/`, `plugins/` — the prelude lives in `plugins/parsed/`,
-so a bare binary is not enough). The kept layout is `<prefix>/bin/brievc` +
-`<prefix>/share/briev/`, which the compiler resolves from its own executable, so
-`BRIEV_HOME` is not needed.
-
-Only **linux x86_64** has a prebuilt artifact. Elsewhere, build it:
-
-```bash
-git clone https://github.com/Randozart/briev-lang
-cargo build --release --manifest-path briev-lang/Cargo.toml --bin brievc
-export BRIEVC=$PWD/briev-lang/target/release/brievc
-```
-
-The static half applies the same order, plus a sibling `briev-lang` checkout.
 
 ## Quick start
 
 ```bash
-cargo test          # fetches brievc on first build (linux x86_64)
-```
-
-Pin a specific compiler instead when you want one:
-
-```bash
-BRIEVC=/path/to/brievc cargo test
+cargo test --features static   # proves every #[pre]/#[post] pair in the suite
 ```
 
 ## What Counsel gives you
@@ -172,14 +137,14 @@ and the feasibility study + decision record in
 - **Phase 3 (A2)** — pure-Briev predicate-as-data (`Op` + `eval_pred`). ✅
 - **Phase 4** — static proof: the `static` feature translates a restricted
   pure-integer Rust subset into Briev `defn`s and discharges the contracts
-  through `brievc --verify-bodies`. ✅
+  through `briev-verify`, in process. ✅
 
 ## Static verification (Phase 4)
 
 With `--features static`, Counsel proves contracts **statically** — no runtime
-checks, no sampling. It reuses Briev's own body prover (the `--verify-bodies`
-gate in `briev-lang`), so the same machinery that proves Briev functions proves
-the translated Rust ones.
+checks, no sampling. It reuses Briev's own body prover through the `briev-verify`
+crate, so the same machinery that proves Briev functions proves the Rust ones,
+and it runs in process with no compiler involved.
 
 ```rust
 use counsel::check::{check_source, Outcome};
@@ -204,13 +169,12 @@ Three outcomes, honestly distinguished: `Proven` (discharged), `Violated`
 (a concrete counterexample exists), and `Unproven` (the prover could not
 decide — advisory, never a false pass).
 
-**Subset** (deliberately narrow): `i64` parameters and return, integer
-arithmetic, comparisons, `&&`/`||`/`!`, `let`, `if`/`else`, `return`, and a
-trailing expression. Anything else is rejected as unsupported rather than
-approximated — a wrong translation would be a wrong proof.
-
-Requires a `brievc` built from `briev-lang` `c0ce60dc` or later; set `BRIEVC`
-to point at one. Without it, twin tests skip and the translator tests still run.
+**Subset** (deliberately narrow): integer parameters and return (i8-i64, u8-u32,
+and u64/usize/isize with their range facts), integer arithmetic, comparisons,
+`&&`/`||`/`!`, `let`, `if`/`else`, `return`, constant `for` ranges, loops carrying
+`#[invariant(...)]`, `max`/`min`/`abs`, and a trailing expression. Anything else
+is rejected as unsupported rather than approximated — a wrong translation would be
+a wrong proof.
 
 ## Known limitations
 
