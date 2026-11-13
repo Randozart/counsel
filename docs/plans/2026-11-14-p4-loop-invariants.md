@@ -107,3 +107,44 @@ was `acc+2`, which settled it in one step.
 `acc >= 0` is unprovable (it can wrap) and `acc <= 1000` is not preserved by
 `acc = acc + i` (`i` is unbounded). `acc == i && i <= n` with `n` bounded satisfies
 both, which is why it proves.
+
+## VC1 and VC3 — the loop is now fully proved (0e03f4d)
+
+Preservation alone proved nothing about the *function*: it said the invariant
+survives one step, not that it holds on entry or that it is worth anything at
+exit. All three while-rule obligations are now emitted and discharged:
+
+| defn | antecedent | goal |
+|---|---|---|
+| `<fn>_init` | `pre && locals == their initialisers && i == lo` | `I` |
+| `<fn>_preserve` | `pre && I && i >= lo && i in range` | `I` |
+| `<fn>_exit` | `pre && I && i past the end` | `post` |
+
+`<fn>_exit` binds `term` to the trailing expression after the loop, which is how
+`post` (stated in terms of `term`) is evaluated at exit. `lo..=hi` is treated as
+one extra step.
+
+### The decomposition is discriminating, which is the whole point
+
+For a deliberately wrong invariant, `#[invariant(acc == i + 1 && i <= n)]`:
+
+```
+count_bad_init                   VIOLATED
+count_bad_preserve               proven
+count_bad_exit                   proven
+```
+
+The entry obligation fails, because `acc == i + 1` is false at entry. The other
+two prove — correctly, since they are only claimed *conditional* on the premise.
+This is why VC2 alone was misleading: it would have reported success. **A loop is
+proved only when all three hold**, and a wrong invariant is caught at the
+obligation whose premise it actually breaks.
+
+### Limits, stated plainly
+
+- The loop must be `lo..hi` over a `for` with a fixed variable, followed by a
+  returned value.
+- A mutated local with no initialiser before the loop contributes no pin, so
+  `<fn>_init` is left unproven rather than assumed.
+- Bounds must be constant for the *translator* to unroll; invariants are the
+  escape from that, which is precisely why they matter.
