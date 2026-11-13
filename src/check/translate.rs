@@ -52,7 +52,8 @@ pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String
         }
         let inlined = inline_calls(item_fn, &summaries)?;
         let item_fn = &inlined;
-        let translated = translate_fn(item_fn, pre, post)?;
+        let translated_list = translate_fn(item_fn, pre, post)?;
+        let translated = &translated_list[0];
         let name = translated.name.clone();
         let (params_text, _facts) = translate_params(&name, &item_fn.sig)?;
         let params: Vec<String> = item_fn
@@ -70,19 +71,24 @@ pub fn translate_file(file: &syn::File) -> Result<(Vec<TranslatedFn>, Vec<String
         // `#[case(...)]` instantiates the same contract at concrete inputs: a
         // parameterless defn the prover can decide outright, instead of leaving
         // the general goal `Unproven`.
-        let cases = case_values_for(&item_fn.attrs, params.len(), &name)?;
-        let mut case_defns = Vec::with_capacity(cases.len());
-        for (index, values) in cases.iter().enumerate() {
-            case_defns.push(instantiate_case(
-                &translated,
-                &name,
-                &params_text,
-                &params,
-                index,
-                values,
-            )?);
+        // A loop contract expands into several obligations whose signatures are
+        // wider than the function's, so a case instantiated from the signature
+        // alone would not match them. Only whole-function contracts are cased.
+        let mut case_defns = Vec::new();
+        if translated_list.len() == 1 {
+            let cases = case_values_for(&item_fn.attrs, params.len(), &name)?;
+            for (index, values) in cases.iter().enumerate() {
+                case_defns.push(instantiate_case(
+                    translated,
+                    &name,
+                    &params_text,
+                    &params,
+                    index,
+                    values,
+                )?);
+            }
         }
-        out.push(translated);
+        out.extend(translated_list);
         out.extend(case_defns);
     }
     Ok((out, warnings))
@@ -93,7 +99,7 @@ fn translate_fn(
     item_fn: &syn::ItemFn,
     pre: Option<String>,
     post: Option<String>,
-) -> Result<TranslatedFn, Error> {
+) -> Result<Vec<TranslatedFn>, Error> {
     let name = item_fn.sig.ident.to_string();
     let (params, facts) = translate_params(&name, &item_fn.sig)?;
     let post = post.unwrap_or_else(|| "true".to_string());
@@ -117,7 +123,14 @@ fn translate_fn(
     // `[post]` in the FINAL state, so `[I && i < hi][I]` is preservation itself —
     // no induction, no new prover machinery.
     if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
-        return translate_preservation(&name, &params, &pre, &invariant, item_fn);
+        let contract = LoopContract {
+            name: &name,
+            params: &params,
+            pre: &pre,
+            invariant: &invariant,
+            post: &post,
+        };
+        return translate_loop_contracts(&contract, item_fn);
     }
     let body = translate_block(&item_fn.block.stmts)?;
     if body.trim().is_empty() {
@@ -126,7 +139,7 @@ fn translate_fn(
         )));
     }
     let briev = format!("defn {name}({params}) [{pre}][{post}] -> Int {{\n    {body}\n}};\n");
-    Ok(TranslatedFn { name, briev })
+    Ok(vec![TranslatedFn { name, briev }])
 }
 
 /// The integer width a boundary type names.
@@ -1343,17 +1356,54 @@ mod invariant_tests {
         )
         .expect("parse");
         let (out, _warnings) = translate_file(&file).expect("preservation is emitted");
+        let names: Vec<&str> = out.iter().map(|defn| defn.name.as_str()).collect();
         assert_eq!(
-            out[0].name, "f_preserve",
-            "the obligation is named for what it actually checks"
+            names,
+            vec!["f_init", "f_preserve", "f_exit"],
+            "a loop is only proved when all three obligations are emitted"
         );
+        let preserve = out.iter().find(|d| d.name == "f_preserve").expect("preserve");
         assert!(
-            out[0]
+            preserve
                 .briev
                 .contains("[acc >= 0 && i >= 0 && i < n][acc >= 0]"),
             "expected the preservation contract, got: {}",
-            out[0].briev
+            preserve.briev
         );
+    }
+
+    /// Each obligation carries the antecedent it needs, and neither the entry
+    /// nor the exit condition assumes the invariant where it must be proved.
+    #[test]
+    fn loop_contracts_carry_entry_and_exit_antecedents() {
+        let file = syn::parse_file(
+            "#[pre(n >= 0 && n <= 1000)]\n#[post(term >= 0)]\n#[invariant(acc == i && i <= n)]\nfn count(n: i64) -> i64 { let mut acc = 0; for i in 0..n { acc = acc + 1; } acc }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("emits three obligations");
+        let find = |wanted: &str| {
+            out.iter()
+                .find(|defn| defn.name == wanted)
+                .unwrap_or_else(|| panic!("missing {wanted}"))
+                .briev
+                .clone()
+        };
+        let init = find("count_init");
+        assert!(
+            init.contains("[n >= 0 && n <= 1000 && acc == 0 && i == 0][acc == i && i <= n]"),
+            "entry must pin locals to their initialisers, not assume the invariant: {init}"
+        );
+        let preserve = find("count_preserve");
+        assert!(
+            preserve.contains("[n >= 0 && n <= 1000 && acc == i && i <= n && i >= 0 && i < n]"),
+            "preservation must carry the precondition and the loop guard: {preserve}"
+        );
+        let exit = find("count_exit");
+        assert!(
+            exit.contains("[n >= 0 && n <= 1000 && acc == i && i <= n && i >= n][term >= 0]"),
+            "exit must add the negation of the guard: {exit}"
+        );
+        assert!(exit.contains("term acc;"), "term must be the returned value: {exit}");
     }
 
     /// A repeated invariant is rejected, like a repeated `#[pre]` slot.
@@ -1368,24 +1418,33 @@ mod invariant_tests {
     }
 }
 
-/// Emit the preservation obligation for an invariant-carrying loop (VC2).
+/// The parameter a loop contract varies over, bundled so the obligation
+/// builders stay under the parameter limit rather than growing an argument list.
+struct LoopContract<'a> {
+    name: &'a str,
+    params: &'a str,
+    pre: &'a str,
+    invariant: &'a str,
+    post: &'a str,
+}
+
+/// The shape of the single `for` loop an `#[invariant(...)]` applies to.
+struct LoopShape {
+    var: String,
+    lower: String,
+    bound: String,
+    closed: bool,
+    at: usize,
+    body: Vec<syn::Stmt>,
+    tail: String,
+}
+
+/// Locate the loop an invariant applies to, plus the value returned after it.
 ///
-/// The defn's precondition is `I && i < hi` in the entry state and its
-/// postcondition is `I` in the final state, which is exactly "the body preserves
-/// the invariant". Briev evaluates the two in different states, so this needs no
-/// induction and no prover change.
-fn translate_preservation(
-    name: &str,
-    params: &str,
-    pre: &str,
-    invariant: &str,
-    item_fn: &syn::ItemFn,
-) -> Result<TranslatedFn, Error> {
-    let mut var = None;
-    let mut body: &[syn::Stmt] = &[];
-    let mut bound = None;
-    let mut lower = None;
-    for stmt in &item_fn.block.stmts {
+/// `post` is stated in terms of `term`, so VC3 needs the trailing expression to
+/// know what `term` becomes at exit.
+fn loop_shape(item_fn: &syn::ItemFn) -> Result<LoopShape, Error> {
+    for (at, stmt) in item_fn.block.stmts.iter().enumerate() {
         let syn::Stmt::Expr(syn::Expr::ForLoop(for_loop), _) = stmt else {
             continue;
         };
@@ -1395,55 +1454,164 @@ fn translate_preservation(
         let syn::Expr::Range(range) = for_loop.expr.as_ref() else {
             continue;
         };
-        let Some(end) = range.end.as_deref() else {
+        let (Some(start), Some(end)) = (range.start.as_deref(), range.end.as_deref()) else {
             continue;
         };
-        let Some(start) = range.start.as_deref() else {
-            continue;
-        };
-        var = Some(pat.ident.to_string());
-        body = for_loop.body.stmts.as_slice();
-        bound = Some(translate_expr(end, true)?);
-        lower = Some(translate_expr(start, true)?);
-        break;
+        let tail = item_fn
+            .block
+            .stmts
+            .iter()
+            .skip(at + 1)
+            .rev()
+            .find_map(|later| match later {
+                syn::Stmt::Expr(expr, None) => Some(expr),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "`#[invariant(...)]` needs the loop followed by a returned value, so the exit state can be checked against the postcondition"
+                        .to_string(),
+                )
+            })?;
+        return Ok(LoopShape {
+            var: pat.ident.to_string(),
+            lower: translate_expr(start, true)?,
+            bound: translate_expr(end, true)?,
+            closed: matches!(range.limits, syn::RangeLimits::Closed(_)),
+            at,
+            body: for_loop.body.stmts.clone(),
+            tail: translate_expr(tail, true)?,
+        });
     }
-    let (Some(var), Some(bound), Some(lower)) = (var, bound, lower) else {
-        return Err(Error::Unsupported(format!(
-            "`{name}`: `#[invariant(...)]` needs a `for` loop over `lo..hi` to apply to"
-        )));
-    };
+    Err(Error::Unsupported(
+        "`#[invariant(...)]` needs a `for` loop over `lo..hi` to apply to".to_string(),
+    ))
+}
+
+/// The parameter list every obligation shares: the function's own parameters,
+/// each local the loop writes, and the loop variable itself.
+///
+/// A written local must be carried in, or the invariant would be
+/// under-specified and preservation would prove nothing.
+fn loop_params(params: &str, mutated: &[String], var: &str) -> String {
     let mut parts: Vec<String> = if params.trim().is_empty() {
         Vec::new()
     } else {
         params.split(", ").map(str::to_string).collect()
     };
-    // Every local the loop writes must be carried in, or the invariant would be
-    // under-specified and preservation would prove nothing.
-    for local in assigned_names(body) {
+    for local in mutated {
         if !parts.iter().any(|part| part.starts_with(&format!("{local}:"))) {
             parts.push(format!("{local}: Int"));
         }
     }
     parts.push(format!("{var}: Int"));
-    let body_text = translate_block(body)?;
-    // The function's precondition holds at loop entry, so it belongs in the
+    parts.join(", ")
+}
+
+/// VC1 pins each written local to the value it enters the loop with.
+///
+/// A local initialised after the loop, or not at all, contributes no pin; the
+/// entry obligation is then simply left unproven rather than assumed.
+fn entry_pins(
+    item_fn: &syn::ItemFn,
+    at: usize,
+    mutated: &[String],
+    var: &str,
+    lower: &str,
+) -> Result<String, Error> {
+    let mut pins: Vec<String> = Vec::new();
+    for stmt in item_fn.block.stmts.iter().take(at) {
+        let syn::Stmt::Local(local) = stmt else {
+            continue;
+        };
+        let (syn::Pat::Ident(pat), Some(init)) = (&local.pat, local.init.as_ref()) else {
+            continue;
+        };
+        let local_name = pat.ident.to_string();
+        if !mutated.contains(&local_name) {
+            continue;
+        }
+        pins.push(format!(
+            "{local_name} == {}",
+            translate_expr(&init.expr, true)?
+        ));
+    }
+    pins.push(format!("{var} == {lower}"));
+    Ok(pins.join(" && "))
+}
+
+/// Emit the three loop obligations for an invariant-carrying loop.
+///
+/// Hoare's while-rule reduces a loop to three straight-line conditions that the
+/// existing translate -> verify-bodies -> solver path discharges with no
+/// induction:
+///
+///   VC1  pre && locals=init && i=lo  =>  I      the invariant holds at entry
+///   VC2  pre && I && i in range      =>  I      the body preserves it
+///   VC3  pre && I && i past the end  =>  post   the exit state meets the contract
+///
+/// All three are required. VC2 alone says only that the invariant survives one
+/// step; it says nothing about where it starts or what it is worth at exit, so on
+/// its own it proves nothing about the function. A wrong invariant is caught at
+/// the obligation where it actually fails, which is why a loop that proves on
+/// all three is proved and one that proves only some is not.
+fn translate_loop_contracts(
+    contract: &LoopContract<'_>,
+    item_fn: &syn::ItemFn,
+) -> Result<Vec<TranslatedFn>, Error> {
+    let LoopContract {
+        name,
+        params,
+        pre,
+        invariant,
+        post,
+    } = *contract;
+    let shape = loop_shape(item_fn)?;
+    let mutated = assigned_names(&shape.body);
+    let all = loop_params(params, &mutated, &shape.var);
+    let pins = entry_pins(item_fn, shape.at, &mutated, &shape.var, &shape.lower)?;
+    let body_text = translate_block(&shape.body)?;
+    let (var, lower, bound) = (&shape.var, &shape.lower, &shape.bound);
+    // `lo..hi` stops at `i == hi`; `lo..=hi` runs one step further.
+    let (within, past) = if shape.closed {
+        (format!("{var} <= {bound}"), format!("{var} > {bound}"))
+    } else {
+        (format!("{var} < {bound}"), format!("{var} >= {bound}"))
+    };
+    // The function's precondition holds at loop entry, so it belongs in every
     // antecedent: a bound like `n <= 1000` is what makes the arithmetic
     // wraparound-free, and without it nothing bounded can be proved.
     // No parentheses anywhere: `encodable` rejects `Expr::Paren`, which would
-    // silently skip the solver.
-    let antecedent = if pre == "true" {
-        format!("{invariant} && {var} >= {lower} && {var} < {bound}")
+    // silently skip the solver instead of failing loudly.
+    let pre_text = if pre == "true" {
+        String::new()
     } else {
-        format!("{pre} && {invariant} && {var} >= {lower} && {var} < {bound}")
+        format!("{pre} && ")
     };
-    let briev = format!(
-        "defn {name}_preserve({}) [{antecedent}][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n",
-        parts.join(", ")
+    let init = format!(
+        "defn {name}_init({all}) [{pre_text}{pins}][{invariant}] -> Int {{\n    term 0;\n}};\n"
     );
-    Ok(TranslatedFn {
-        name: format!("{name}_preserve"),
-        briev,
-    })
+    let preserve = format!(
+        "defn {name}_preserve({all}) [{pre_text}{invariant} && {var} >= {lower} && {within}][{invariant}] -> Int {{\n    {body_text}\n    {var} = {var} + 1;\n    term 0;\n}};\n"
+    );
+    let exit = format!(
+        "defn {name}_exit({all}) [{pre_text}{invariant} && {past}][{post}] -> Int {{\n    term {};\n}};\n",
+        shape.tail
+    );
+    Ok(vec![
+        TranslatedFn {
+            name: format!("{name}_init"),
+            briev: init,
+        },
+        TranslatedFn {
+            name: format!("{name}_preserve"),
+            briev: preserve,
+        },
+        TranslatedFn {
+            name: format!("{name}_exit"),
+            briev: exit,
+        },
+    ])
 }
 
 /// Names assigned by a statement list (one level deep).
