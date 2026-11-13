@@ -15,6 +15,7 @@
 // approximated: a wrong translation would be a wrong proof.
 
 pub mod build;
+pub mod prover;
 pub mod inprocess;
 
 use std::path::Path;

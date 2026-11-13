@@ -6,7 +6,7 @@
 #   * runtime checks — always built: the Briev-authored predicate core
 #     (bridge/counsel.bv) is compiled to a native static library by build.rs.
 #   * static proof   — `--features static`: translates a restricted pure-integer
-#     Rust subset and discharges it through `brievc --verify-bodies`.
+#     Rust subset and discharges it with its own prover.
 #   * attributes     — `--features macros` (default): `#[pre]`/`#[post]`/`#[case]`
 #     are inert markers that let the source compile. Enforcement comes from
 #     `counsel-check` (static) or `contract()` (runtime), never the attribute.
@@ -17,7 +17,7 @@
 
 [package]
 name = "counsel"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Static and runtime pre/post-condition verification for Rust: the predicate core is authored in Briev and compiled to native, while contracts are discharged by Briev's own body prover. Lighter than Kani."
 license = "Apache-2.0 WITH LLVM-exception"
@@ -25,7 +25,7 @@ repository = "https://github.com/Randozart/counsel"
 homepage = "https://github.com/Randozart/counsel"
 documentation = "https://docs.rs/counsel"
 readme = "README.md"
-keywords = ["verification", "contracts", "precondition", "postcondition", "briev"]
+keywords = ["verification", "contracts", "precondition", "postcondition"]
 categories = ["development-tools::testing", "compilers"]
 
 [features]
@@ -33,11 +33,10 @@ default = ["macros"]
 # Contract attributes: `#[pre]`, `#[post]`, `#[case]` (inert markers).
 macros = ["dep:counsel-macros"]
 # Static verification of a restricted pure-integer Rust subset.
-static = ["dep:syn", "dep:briev-verify", "dep:serde_json"]
+static = ["dep:syn", "dep:serde_json"]
 
 [dependencies]
 counsel-macros = { version = "0.1", path = "counsel-macros", optional = true }
-briev-verify = { version = "0.1", path = "../briev-lang/briev-verify", optional = true }
 serde_json = { version = "1", optional = true }
 syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit", "visit-mut"], optional = true }
 
@@ -54,7 +53,6 @@ required-features = ["static"]
 [workspace]
 members = ["counsel-macros"]
 # CI checks out the compiler here (and so may a developer); it is not a member.
-exclude = [".briev-lang"]
 resolver = "2"
 
 [[example]]

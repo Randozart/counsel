@@ -24,7 +24,7 @@ reported as a pass.
                     counsel::check: Rust source text
                                               │  syn parse + subset check
                                               ▼
-              briev_verify::ast (built directly, in process)
+              prover AST (built directly, in process)
                                               │  verify_bodies
                                               ▼
                           Proven / Unproven / Violated
@@ -32,7 +32,7 @@ reported as a pass.
 
 The runtime half is **ordinary Rust**: no build script, no native library, no
 download. The static half builds the prover's AST nodes directly and calls
-Briev's prover in the same process — no compiler, no subprocess, no pinned
+its own prover in the same process — no compiler, no subprocess, no pinned
 toolchain. Neither half re-implements a prover.
 
 ### Who owns what
@@ -41,7 +41,7 @@ toolchain. Neither half re-implements a prover.
 |---|---|---|
 | Runtime checks, equality, opcode dispatch, sampler | Rust | `src/lib.rs` |
 | Static frontend: translate, discover, report parsing | Rust | `src/check/` |
-| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `briev-lang` |
+| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `src/check/prover/` |
 
 The runtime half used to be Briev-authored (`bridge/counsel.bv`, 167 lines),
 compiled by `build.rs` into a static library linked into the crate. It was a
@@ -196,7 +196,7 @@ silently turn a violation into a proof.
 
 ## 4. Under the hood: Briev's body prover
 
-Lives in the `briev-verify` crate (`src/verify.rs`), extracted from the compiler
+Lives in `src/check/prover/`, written for exactly the nodes Counsel emits
 so it can be used without it; the compiler consumes the same code through a
 re-export, so there is one implementation.
 

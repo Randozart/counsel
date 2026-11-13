@@ -3,12 +3,10 @@
 Basic **pre/post-condition verification** for Rust.
 
 Runtime checks are plain Rust with no external requirements. The `static`
-feature proves contracts **ahead of time** by handing them to the body prover
-from [`briev-lang`](https://github.com/), the contract-first language's compiler.
+feature proves contracts **ahead of time** with a body prover of its own.
 
-**Briev is only involved if you ask for `--features static`.** The default
-feature set compiles no Briev, links no Briev and runs no Briev — `cargo add
-counsel` builds offline on any platform.
+**It has no exotic dependencies.** Both halves are ordinary Rust: `cargo add
+counsel` builds offline on any platform, with nothing to install.
 
 **Who owns what:**
 
@@ -16,7 +14,7 @@ counsel` builds offline on any platform.
 |---|---|---|
 | Runtime checks, equality, opcode dispatch, sampler | Rust | `src/lib.rs` |
 | Static-verification frontend (translate, discover, parse reports) | Rust | `src/check/` |
-| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `briev-lang` |
+| Body prover (paths, bounds, tri-state verdicts, SMT) | Rust | `src/check/prover/` |
 
 Positioned as **lighter than Kani**: it enforces obligations at runtime and
 cross-verifies a function against a shadow reference. It is not a full
@@ -40,13 +38,13 @@ src/lib.rs   ← contract, verify, satisfies, checks: ordinary Rust
 `#[pre]`/`#[post]`/`#[invariant]` are inert markers from the `counsel-macros`
 proc-macro crate. There is no build script, no native library and no download.
 
-### Static (`--features static`) — Briev's prover, in process
+### Static (`--features static`) — the prover, in process
 
 ```
-Rust source ──syn──> briev_verify::ast ──> verify_bodies ──> typed verdicts
+Rust source ──syn──> prover AST ──> path walk ──> typed verdicts
 ```
 
-No compiler, no subprocess, no download. The prover is the `briev-verify` crate:
+No compiler, no subprocess, no download, and no prover beyond this crate:
 Counsel builds the AST nodes directly and calls it in the same process.
 
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -64,7 +62,7 @@ counsel = { version = "0.2", features = ["static"] }   # + static verification
 | Feature | Gives you | Needs Briev |
 |---|---|---|
 | `macros` (default) | `#[pre]`/`#[post]`/`#[invariant]` accepted by rustc | no |
-| `static` | the `counsel::check` API and the `counsel-check` binary | only the `briev-verify` crate — ordinary Rust, compiled in |
+| `static` | the `counsel::check` API and the `counsel-check` binary | nothing — the prover ships in this crate |
 
 `counsel-macros` is a separate crate only because Rust requires
 `proc-macro = true` crates to stand alone; `counsel` re-exports its attributes,
@@ -77,7 +75,7 @@ Enforcement comes from `counsel-check` (static) or `contract()` (runtime).
 script, no native library, no compiler, no download.
 
 The **static half** (`--features static`) needs nothing either. It adds the
-`briev-verify` crate — ordinary Rust compiled into your build — so there is no
+prover is part of the crate itself, so there is no
 binary to find, fetch, checksum or version-pin.
 
 ```bash
@@ -137,12 +135,12 @@ and the feasibility study + decision record in
 - **Phase 3 (A2)** — pure-Briev predicate-as-data (`Op` + `eval_pred`). ✅
 - **Phase 4** — static proof: the `static` feature translates a restricted
   pure-integer Rust subset into Briev `defn`s and discharges the contracts
-  through `briev-verify`, in process. ✅
+  in process, by Counsel's own prover. ✅
 
 ## Static verification (Phase 4)
 
 With `--features static`, Counsel proves contracts **statically** — no runtime
-checks, no sampling. It reuses Briev's own body prover through the `briev-verify`
+checks, no sampling. It uses its own body prover
 crate, so the same machinery that proves Briev functions proves the Rust ones,
 and it runs in process with no compiler involved.
 

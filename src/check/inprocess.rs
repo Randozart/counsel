@@ -7,8 +7,8 @@
 
 use super::build;
 use super::{Error, FnVerdict, Outcome, Report};
-use briev_verify::ast::TopLevel;
-use briev_verify::verify::verify_bodies;
+use super::prover::ast::Defn;
+use super::prover;
 
 /// Whether a report entry names `name` — `"f: reason"` or a bare `"f"`.
 fn mentions(entry: &str, name: &str) -> bool {
@@ -16,11 +16,8 @@ fn mentions(entry: &str, name: &str) -> bool {
 }
 
 /// The declaration name of a built item.
-fn name_of(item: &TopLevel) -> String {
-    match item {
-        TopLevel::Definition(defn) => defn.name.clone(),
-        _ => String::new(),
-    }
+fn name_of(defn: &Defn) -> String {
+    defn.name.clone()
 }
 
 /// Classify one built definition against the prover's report.
@@ -28,7 +25,7 @@ fn name_of(item: &TopLevel) -> String {
 /// Note the last arm: a definition named nowhere was never examined, so it is
 /// reported `Unproven`. Inferring `Proven` from absence is exactly the false
 /// proof this crate must never ship.
-fn outcome_of(name: &str, report: &briev_verify::verify::BodyReport) -> Outcome {
+fn outcome_of(name: &str, report: &prover::Report) -> Outcome {
     if report.violated.iter().any(|entry| mentions(entry, name)) {
         return Outcome::Violated;
     }
@@ -97,7 +94,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     if items.is_empty() {
         return Ok(Report::default());
     }
-    let report = verify_bodies(&items);
+    let report = prover::verify(&items);
     let verdicts = items
         .iter()
         .map(|item| {

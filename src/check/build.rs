@@ -10,28 +10,26 @@
 // emitter must be right by construction rather than by validation.
 
 use super::Error;
-use briev_verify::ast::{
-    BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel, UnaryOpKind,
-};
+use super::prover::ast::{BinOp, Contract, Defn, Expr, Stmt, UnOp};
 
 /// An integer literal node.
 fn lit(value: i64) -> Expr {
-    Expr::Decimal(value)
+    Expr::Int(value)
 }
 
 /// A bare identifier node.
 fn ident(name: &str) -> Expr {
-    Expr::Identifier(name.to_string())
+    Expr::Name(name.to_string())
 }
 
 /// A binary operation node.
-fn binary(kind: BinaryOpKind, left: Expr, right: Expr) -> Expr {
-    Expr::BinaryOp(kind, Box::new(left), Box::new(right))
+fn binary(kind: BinOp, left: Expr, right: Expr) -> Expr {
+    Expr::Binary(kind, Box::new(left), Box::new(right))
 }
 
 /// `left && right`.
 fn and(left: Expr, right: Expr) -> Expr {
-    binary(BinaryOpKind::And, left, right)
+    binary(BinOp::And, left, right)
 }
 
 /// Conjoin every expression, left to right. `None` when the list is empty.
@@ -72,8 +70,8 @@ fn width_of(ty: &syn::Type) -> Option<&'static str> {
 fn domain_fact(name: &str, width: &str) -> Option<Expr> {
     let range = |lo: i64, hi: i64| {
         and(
-            binary(BinaryOpKind::Ge, ident(name), lit(lo)),
-            binary(BinaryOpKind::Le, ident(name), lit(hi)),
+            binary(BinOp::Ge, ident(name), lit(lo)),
+            binary(BinOp::Le, ident(name), lit(hi)),
         )
     };
     Some(match width {
@@ -87,7 +85,7 @@ fn domain_fact(name: &str, width: &str) -> Option<Expr> {
         "u32" => range(0, 4294967295),
         // The type's own range exceeds `Int`. The model therefore covers the
         // non-negative `Int` range only — stated rather than implied.
-        "u64" | "usize" => binary(BinaryOpKind::Ge, ident(name), lit(0)),
+        "u64" | "usize" => binary(BinOp::Ge, ident(name), lit(0)),
         _ => return None,
     })
 }
@@ -109,21 +107,21 @@ fn describe(expr: &syn::Expr) -> String {
 }
 
 /// Map a Rust binary operator onto the prover's operator kind.
-fn binary_kind(op: &syn::BinOp) -> Option<BinaryOpKind> {
+fn binary_kind(op: &syn::BinOp) -> Option<BinOp> {
     Some(match op {
-        syn::BinOp::Add(_) => BinaryOpKind::Add,
-        syn::BinOp::Sub(_) => BinaryOpKind::Sub,
-        syn::BinOp::Mul(_) => BinaryOpKind::Mul,
-        syn::BinOp::Div(_) => BinaryOpKind::Div,
-        syn::BinOp::Rem(_) => BinaryOpKind::Mod,
-        syn::BinOp::Eq(_) => BinaryOpKind::Eq,
-        syn::BinOp::Ne(_) => BinaryOpKind::Neq,
-        syn::BinOp::Lt(_) => BinaryOpKind::Lt,
-        syn::BinOp::Le(_) => BinaryOpKind::Le,
-        syn::BinOp::Gt(_) => BinaryOpKind::Gt,
-        syn::BinOp::Ge(_) => BinaryOpKind::Ge,
-        syn::BinOp::And(_) => BinaryOpKind::And,
-        syn::BinOp::Or(_) => BinaryOpKind::Or,
+        syn::BinOp::Add(_) => BinOp::Add,
+        syn::BinOp::Sub(_) => BinOp::Sub,
+        syn::BinOp::Mul(_) => BinOp::Mul,
+        syn::BinOp::Div(_) => BinOp::Div,
+        syn::BinOp::Rem(_) => BinOp::Rem,
+        syn::BinOp::Eq(_) => BinOp::Eq,
+        syn::BinOp::Ne(_) => BinOp::Ne,
+        syn::BinOp::Lt(_) => BinOp::Lt,
+        syn::BinOp::Le(_) => BinOp::Le,
+        syn::BinOp::Gt(_) => BinOp::Gt,
+        syn::BinOp::Ge(_) => BinOp::Ge,
+        syn::BinOp::And(_) => BinOp::And,
+        syn::BinOp::Or(_) => BinOp::Or,
         _ => return None,
     })
 }
@@ -171,8 +169,8 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
         syn::Expr::Unary(unary) => {
             let inner = expr(&unary.expr, allow_ident)?;
             match unary.op {
-                syn::UnOp::Neg(_) => Ok(Expr::UnaryOp(UnaryOpKind::Neg, Box::new(inner))),
-                syn::UnOp::Not(_) => Ok(Expr::UnaryOp(UnaryOpKind::Not, Box::new(inner))),
+                syn::UnOp::Neg(_) => Ok(Expr::Unary(UnOp::Neg, Box::new(inner))),
+                syn::UnOp::Not(_) => Ok(Expr::Unary(UnOp::Not, Box::new(inner))),
                 _ => Err(Error::Unsupported("unsupported unary operator".to_string())),
             }
         }
@@ -205,30 +203,30 @@ fn integer_method(call: &syn::ExprMethodCall) -> Option<IntegerMethod> {
 }
 
 /// The value of a recognised method call, as guarded `term` statements.
-fn method_terms(method: IntegerMethod) -> Vec<Statement> {
+fn method_terms(method: IntegerMethod) -> Vec<Stmt> {
     let mut out = Vec::new();
     match method {
         IntegerMethod::Max(a, b) => {
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Ge, a.clone(), b.clone()),
-                vec![Statement::Term(Some(a))],
+            out.push(Stmt::Guard(
+                binary(BinOp::Ge, a.clone(), b.clone()),
+                vec![Stmt::Term(Some(a))],
             ));
-            out.push(Statement::Term(Some(b)));
+            out.push(Stmt::Term(Some(b)));
         }
         IntegerMethod::Min(a, b) => {
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Le, a.clone(), b.clone()),
-                vec![Statement::Term(Some(a))],
+            out.push(Stmt::Guard(
+                binary(BinOp::Le, a.clone(), b.clone()),
+                vec![Stmt::Term(Some(a))],
             ));
-            out.push(Statement::Term(Some(b)));
+            out.push(Stmt::Term(Some(b)));
         }
         IntegerMethod::Abs(a) => {
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Ge, a.clone(), lit(0)),
-                vec![Statement::Term(Some(a.clone()))],
+            out.push(Stmt::Guard(
+                binary(BinOp::Ge, a.clone(), lit(0)),
+                vec![Stmt::Term(Some(a.clone()))],
             ));
-            out.push(Statement::Term(Some(Expr::UnaryOp(
-                UnaryOpKind::Neg,
+            out.push(Stmt::Term(Some(Expr::Unary(
+                UnOp::Neg,
                 Box::new(a),
             ))));
         }
@@ -278,12 +276,12 @@ fn invert_condition(node: &syn::Expr) -> Result<Expr, Error> {
     };
     if let syn::Expr::Binary(bin) = inner {
         let flipped = match bin.op {
-            syn::BinOp::Lt(_) => Some(BinaryOpKind::Ge),
-            syn::BinOp::Le(_) => Some(BinaryOpKind::Gt),
-            syn::BinOp::Gt(_) => Some(BinaryOpKind::Le),
-            syn::BinOp::Ge(_) => Some(BinaryOpKind::Lt),
-            syn::BinOp::Eq(_) => Some(BinaryOpKind::Neq),
-            syn::BinOp::Ne(_) => Some(BinaryOpKind::Eq),
+            syn::BinOp::Lt(_) => Some(BinOp::Ge),
+            syn::BinOp::Le(_) => Some(BinOp::Gt),
+            syn::BinOp::Gt(_) => Some(BinOp::Le),
+            syn::BinOp::Ge(_) => Some(BinOp::Lt),
+            syn::BinOp::Eq(_) => Some(BinOp::Ne),
+            syn::BinOp::Ne(_) => Some(BinOp::Eq),
             _ => None,
         };
         if let Some(kind) = flipped {
@@ -294,15 +292,15 @@ fn invert_condition(node: &syn::Expr) -> Result<Expr, Error> {
             ));
         }
     }
-    Ok(Expr::UnaryOp(UnaryOpKind::Not, Box::new(expr(node, true)?)))
+    Ok(Expr::Unary(UnOp::Not, Box::new(expr(node, true)?)))
 }
 
 /// Build an `else` arm: a block, an `else if` chain, or a bare value.
-fn branch(node: &syn::Expr) -> Result<Vec<Statement>, Error> {
+fn branch(node: &syn::Expr) -> Result<Vec<Stmt>, Error> {
     match node {
         syn::Expr::Block(node) => block(&node.block.stmts),
         syn::Expr::If(if_expr) => if_statements(if_expr),
-        other => Ok(vec![Statement::Term(Some(expr(other, true)?))]),
+        other => Ok(vec![Stmt::Term(Some(expr(other, true)?))]),
     }
 }
 
@@ -312,10 +310,10 @@ fn branch(node: &syn::Expr) -> Result<Vec<Statement>, Error> {
 /// reaching it implies the condition failed, because the then-arm terminated.
 /// Otherwise the else arm is guarded by the inverted condition, which also gives
 /// the prover a usable numeric fact.
-fn if_statements(node: &syn::ExprIf) -> Result<Vec<Statement>, Error> {
+fn if_statements(node: &syn::ExprIf) -> Result<Vec<Stmt>, Error> {
     let cond = expr(&node.cond, true)?;
     let then_body = block(&node.then_branch.stmts)?;
-    let mut out = vec![Statement::Guarded(cond, then_body)];
+    let mut out = vec![Stmt::Guard(cond, then_body)];
     let Some((_, else_expr)) = &node.else_branch else {
         return Ok(out);
     };
@@ -324,12 +322,12 @@ fn if_statements(node: &syn::ExprIf) -> Result<Vec<Statement>, Error> {
         out.extend(else_body);
         return Ok(out);
     }
-    out.push(Statement::Guarded(invert_condition(&node.cond)?, else_body));
+    out.push(Stmt::Guard(invert_condition(&node.cond)?, else_body));
     Ok(out)
 }
 
 /// Build one statement, appending zero or more nodes.
-fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Statement>) -> Result<(), Error> {
+fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Stmt>) -> Result<(), Error> {
     match stmt {
         syn::Stmt::Local(local) => {
             let syn::Pat::Ident(pat) = &local.pat else {
@@ -342,12 +340,9 @@ fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Statement>) -> Resul
                     "`let` without an initializer is not supported".to_string(),
                 ));
             };
-            out.push(Statement::Let {
+            out.push(Stmt::Let {
                 name: pat.ident.to_string(),
-                names: Vec::new(),
-                ty: None,
-                expr: Some(expr(&init.expr, true)?),
-                modifiers: Vec::new(),
+                value: expr(&init.expr, true)?,
             });
             Ok(())
         }
@@ -363,7 +358,7 @@ fn expr_statement(
     node: &syn::Expr,
     no_semi: bool,
     is_last: bool,
-    out: &mut Vec<Statement>,
+    out: &mut Vec<Stmt>,
 ) -> Result<(), Error> {
     match node {
         syn::Expr::Return(ret) => {
@@ -372,7 +367,7 @@ fn expr_statement(
                     "bare `return;` has no value in the pure-integer subset".to_string(),
                 ));
             };
-            out.push(Statement::Term(Some(expr(value, true)?)));
+            out.push(Stmt::Term(Some(expr(value, true)?)));
             Ok(())
         }
         syn::Expr::If(if_expr) => {
@@ -402,7 +397,7 @@ fn expr_statement(
                 out.extend(method_assignment(&name, method));
                 return Ok(());
             }
-            out.push(Statement::Assign(ident(&name), expr(&assign.right, true)?));
+            out.push(Stmt::Assign(ident(&name), expr(&assign.right, true)?));
             Ok(())
         }
         syn::Expr::MethodCall(call) if no_semi && is_last => {
@@ -416,7 +411,7 @@ fn expr_statement(
             Ok(())
         }
         other if no_semi && is_last => {
-            out.push(Statement::Term(Some(expr(other, true)?)));
+            out.push(Stmt::Term(Some(expr(other, true)?)));
             Ok(())
         }
         other => Err(Error::Unsupported(format!(
@@ -428,30 +423,30 @@ fn expr_statement(
 
 /// A recognised method call assigned to a name: bind once, then guard the better
 /// value.
-fn method_assignment(target: &str, method: IntegerMethod) -> Vec<Statement> {
+fn method_assignment(target: &str, method: IntegerMethod) -> Vec<Stmt> {
     let mut out = Vec::new();
     match method {
         IntegerMethod::Max(a, b) => {
-            out.push(Statement::Assign(ident(target), a.clone()));
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Gt, b.clone(), a),
-                vec![Statement::Assign(ident(target), b)],
+            out.push(Stmt::Assign(ident(target), a.clone()));
+            out.push(Stmt::Guard(
+                binary(BinOp::Gt, b.clone(), a),
+                vec![Stmt::Assign(ident(target), b)],
             ));
         }
         IntegerMethod::Min(a, b) => {
-            out.push(Statement::Assign(ident(target), a.clone()));
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Lt, b.clone(), a),
-                vec![Statement::Assign(ident(target), b)],
+            out.push(Stmt::Assign(ident(target), a.clone()));
+            out.push(Stmt::Guard(
+                binary(BinOp::Lt, b.clone(), a),
+                vec![Stmt::Assign(ident(target), b)],
             ));
         }
         IntegerMethod::Abs(a) => {
-            out.push(Statement::Assign(ident(target), a.clone()));
-            out.push(Statement::Guarded(
-                binary(BinaryOpKind::Lt, a.clone(), lit(0)),
-                vec![Statement::Assign(
+            out.push(Stmt::Assign(ident(target), a.clone()));
+            out.push(Stmt::Guard(
+                binary(BinOp::Lt, a.clone(), lit(0)),
+                vec![Stmt::Assign(
                     ident(target),
-                    Expr::UnaryOp(UnaryOpKind::Neg, Box::new(a)),
+                    Expr::Unary(UnOp::Neg, Box::new(a)),
                 )],
             ));
         }
@@ -460,7 +455,7 @@ fn method_assignment(target: &str, method: IntegerMethod) -> Vec<Statement> {
 }
 
 /// Build a statement list.
-fn block(stmts: &[syn::Stmt]) -> Result<Vec<Statement>, Error> {
+fn block(stmts: &[syn::Stmt]) -> Result<Vec<Stmt>, Error> {
     let mut out = Vec::new();
     let last_index = stmts.len().saturating_sub(1);
     for (index, stmt) in stmts.iter().enumerate() {
@@ -559,7 +554,7 @@ impl syn::visit_mut::VisitMut for SubstituteLoopVar<'_> {
 ///
 /// A variable trip count cannot be unrolled soundly, so it is refused rather
 /// than approximated — an invariant is the way to verify such a loop.
-fn unroll_loop(for_loop: &syn::ExprForLoop, out: &mut Vec<Statement>) -> Result<(), Error> {
+fn unroll_loop(for_loop: &syn::ExprForLoop, out: &mut Vec<Stmt>) -> Result<(), Error> {
     let syn::Pat::Ident(pat) = for_loop.pat.as_ref() else {
         return Err(Error::Unsupported(
             "`for` loops are supported only with a plain loop variable".to_string(),
@@ -608,7 +603,7 @@ fn unroll_loop(for_loop: &syn::ExprForLoop, out: &mut Vec<Statement>) -> Result<
 }
 
 /// A value expression as statements, desugaring a supported method call.
-fn value_statements(node: &syn::Expr) -> Result<Vec<Statement>, Error> {
+fn value_statements(node: &syn::Expr) -> Result<Vec<Stmt>, Error> {
     if let syn::Expr::MethodCall(call) = node {
         let method = integer_method(call).ok_or_else(|| {
             Error::Unsupported(format!(
@@ -618,7 +613,7 @@ fn value_statements(node: &syn::Expr) -> Result<Vec<Statement>, Error> {
         })?;
         return Ok(method_terms(method));
     }
-    Ok(vec![Statement::Term(Some(expr(node, true)?))])
+    Ok(vec![Stmt::Term(Some(expr(node, true)?))])
 }
 
 /// The domain facts followed by the author's precondition.
@@ -783,13 +778,13 @@ fn entry_pins(
             continue;
         };
         pins.push(binary(
-            BinaryOpKind::Eq,
+            BinOp::Eq,
             ident(&local_name),
             expr(&init.expr, true)?,
         ));
     }
     pins.push(binary(
-        BinaryOpKind::Eq,
+        BinOp::Eq,
         ident(&shape.var),
         shape.lower.clone(),
     ));
@@ -800,7 +795,7 @@ fn entry_pins(
 ///
 /// All three are required: `_preserve` alone says the invariant survives one
 /// step, not that it holds on entry or is worth anything at exit.
-fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<TopLevel>, Error> {
+fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<Defn>, Error> {
     let name = item_fn.sig.ident.to_string();
     let shape = loop_shape(item_fn)?;
     let locals = loop_locals(item_fn, &shape);
@@ -814,13 +809,13 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<To
     let body = block(&shape.body)?;
     let (within, past) = if shape.closed {
         (
-            binary(BinaryOpKind::Le, ident(&shape.var), shape.bound.clone()),
-            binary(BinaryOpKind::Gt, ident(&shape.var), shape.bound.clone()),
+            binary(BinOp::Le, ident(&shape.var), shape.bound.clone()),
+            binary(BinOp::Gt, ident(&shape.var), shape.bound.clone()),
         )
     } else {
         (
-            binary(BinaryOpKind::Lt, ident(&shape.var), shape.bound.clone()),
-            binary(BinaryOpKind::Ge, ident(&shape.var), shape.bound.clone()),
+            binary(BinOp::Lt, ident(&shape.var), shape.bound.clone()),
+            binary(BinOp::Ge, ident(&shape.var), shape.bound.clone()),
         )
     };
 
@@ -829,31 +824,31 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<To
     let mut init_parts = pre.clone();
     init_parts.extend(pins);
     let init_pre = conjunction(init_parts).unwrap_or(Expr::Bool(true));
-    let init = TopLevel::Definition(Definition::prover_defn(
+    let init = top_level(defn(
         format!("{name}_init"),
-        Contract::proven(init_pre, invariant.clone()),
-        vec![Statement::Term(Some(lit(0)))],
+        proven(init_pre, invariant.clone()),
+        vec![Stmt::Term(Some(lit(0)))],
     ));
 
     // VC2: the body preserves it, with the guard and the precondition available.
     let mut preserve_parts = pre.clone();
     preserve_parts.push(invariant.clone());
     preserve_parts.push(binary(
-        BinaryOpKind::Ge,
+        BinOp::Ge,
         ident(&shape.var),
         shape.lower.clone(),
     ));
     preserve_parts.push(within);
     let preserve_pre = conjunction(preserve_parts).unwrap_or(Expr::Bool(true));
     let mut preserve_body = body;
-    preserve_body.push(Statement::Assign(
+    preserve_body.push(Stmt::Assign(
         ident(&shape.var),
-        binary(BinaryOpKind::Add, ident(&shape.var), lit(1)),
+        binary(BinOp::Add, ident(&shape.var), lit(1)),
     ));
-    preserve_body.push(Statement::Term(Some(lit(0))));
-    let preserve = TopLevel::Definition(Definition::prover_defn(
+    preserve_body.push(Stmt::Term(Some(lit(0))));
+    let preserve = top_level(defn(
         format!("{name}_preserve"),
-        Contract::proven(preserve_pre, invariant.clone()),
+        proven(preserve_pre, invariant.clone()),
         preserve_body,
     ));
 
@@ -862,9 +857,9 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<To
     exit_parts.push(invariant);
     exit_parts.push(past);
     let exit_pre = conjunction(exit_parts).unwrap_or(Expr::Bool(true));
-    let exit = TopLevel::Definition(Definition::prover_defn(
+    let exit = top_level(defn(
         format!("{name}_exit"),
-        Contract::proven(exit_pre, post),
+        proven(exit_pre, post),
         value_statements(&shape.tail)?,
     ));
 
@@ -915,24 +910,24 @@ fn case_literal(node: &syn::Expr) -> Result<i64, Error> {
 /// Replace parameters with their concrete case values in a built expression.
 fn substitute_expr(node: &Expr, map: &[(String, i64)]) -> Expr {
     match node {
-        Expr::Identifier(name) => match map.iter().find(|(param, _)| param == name) {
+        Expr::Name(name) => match map.iter().find(|(param, _)| param == name) {
             Some((_, value)) => lit(*value),
             None => node.clone(),
         },
-        Expr::BinaryOp(kind, left, right) => Expr::BinaryOp(
+        Expr::Binary(kind, left, right) => Expr::Binary(
             kind.clone(),
             Box::new(substitute_expr(left, map)),
             Box::new(substitute_expr(right, map)),
         ),
-        Expr::UnaryOp(kind, inner) => {
-            Expr::UnaryOp(kind.clone(), Box::new(substitute_expr(inner, map)))
+        Expr::Unary(kind, inner) => {
+            Expr::Unary(kind.clone(), Box::new(substitute_expr(inner, map)))
         }
         other => other.clone(),
     }
 }
 
 /// Replace parameters with their concrete case values in a built statement list.
-fn substitute_stmts(stmts: &[Statement], map: &[(String, i64)]) -> Vec<Statement> {
+fn substitute_stmts(stmts: &[Stmt], map: &[(String, i64)]) -> Vec<Stmt> {
     stmts
         .iter()
         .map(|stmt| substitute_stmt(stmt, map))
@@ -940,27 +935,18 @@ fn substitute_stmts(stmts: &[Statement], map: &[(String, i64)]) -> Vec<Statement
 }
 
 /// Replace parameters with their concrete case values in one statement.
-fn substitute_stmt(stmt: &Statement, map: &[(String, i64)]) -> Statement {
+fn substitute_stmt(stmt: &Stmt, map: &[(String, i64)]) -> Stmt {
     match stmt {
-        Statement::Assign(target, value) => {
-            Statement::Assign(substitute_expr(target, map), substitute_expr(value, map))
+        Stmt::Assign(target, value) => {
+            Stmt::Assign(substitute_expr(target, map), substitute_expr(value, map))
         }
-        Statement::Term(Some(value)) => Statement::Term(Some(substitute_expr(value, map))),
-        Statement::Guarded(cond, body) => {
-            Statement::Guarded(substitute_expr(cond, map), substitute_stmts(body, map))
+        Stmt::Term(Some(value)) => Stmt::Term(Some(substitute_expr(value, map))),
+        Stmt::Guard(cond, body) => {
+            Stmt::Guard(substitute_expr(cond, map), substitute_stmts(body, map))
         }
-        Statement::Let {
-            name,
-            names,
-            ty,
-            expr,
-            modifiers,
-        } => Statement::Let {
+        Stmt::Let { name, value } => Stmt::Let {
             name: name.clone(),
-            names: names.clone(),
-            ty: ty.clone(),
-            expr: expr.as_ref().map(|value| substitute_expr(value, map)),
-            modifiers: modifiers.clone(),
+            value: substitute_expr(value, map),
         },
         other => other.clone(),
     }
@@ -986,7 +972,7 @@ fn parameter_names(item_fn: &syn::ItemFn) -> Vec<String> {
 ///
 /// A case proves one concrete input, not the general contract, and is named
 /// `<fn>__caseN` so the verdict can never be mistaken for a general proof.
-fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
     let name = item_fn.sig.ident.to_string();
     let params = parameter_names(item_fn);
     let cases = case_values(&item_fn.attrs, params.len(), &name)?;
@@ -1018,9 +1004,9 @@ fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
     let mut out = Vec::new();
     for (index, values) in cases.iter().enumerate() {
         let map: Vec<(String, i64)> = params.iter().cloned().zip(values.iter().copied()).collect();
-        out.push(TopLevel::Definition(Definition::prover_defn(
+        out.push(top_level(defn(
             format!("{name}__case{index}"),
-            Contract::proven(substitute_expr(&pre, &map), substitute_expr(&post, &map)),
+            proven(substitute_expr(&pre, &map), substitute_expr(&post, &map)),
             substitute_stmts(&body, &map),
         )));
     }
@@ -1199,7 +1185,7 @@ impl syn::visit_mut::VisitMut for Substitute<'_> {
 }
 
 /// Build one contracted function as a prover input.
-fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+fn definition(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
     let name = item_fn.sig.ident.to_string();
     if let Some(invariant) = contract_attr(&item_fn.attrs, "invariant")? {
         return loop_contracts(item_fn, &invariant);
@@ -1210,9 +1196,9 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
         .transpose()?
         .unwrap_or(Expr::Bool(true));
     let body = block(&item_fn.block.stmts)?;
-    Ok(vec![TopLevel::Definition(Definition::prover_defn(
+    Ok(vec![top_level(defn(
         name,
-        Contract::proven(pre, post),
+        proven(pre, post),
         body,
     ))])
 }
@@ -1228,7 +1214,7 @@ pub fn has_contract(item_fn: &syn::ItemFn) -> bool {
 ///
 /// A loop contract expands into its obligations and takes no cases, whose
 /// generated signature would not match the function the author wrote.
-pub fn definition_for(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+pub fn definition_for(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
     let is_loop = item_fn
         .attrs
         .iter()
@@ -1241,7 +1227,7 @@ pub fn definition_for(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
 }
 
 /// Build every contracted function in a parsed Rust file.
-pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
+pub fn definitions(file: &syn::File) -> Result<Vec<Defn>, Error> {
     let mut out = Vec::new();
     for item in &file.items {
         let syn::Item::Fn(item_fn) = item else {
@@ -1253,4 +1239,23 @@ pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
         out.extend(definition_for(item_fn)?);
     }
     Ok(out)
+}
+
+/// Build one prover definition.
+fn defn(name: impl Into<String>, contract: Contract, body: Vec<Stmt>) -> Defn {
+    Defn {
+        name: name.into(),
+        contract,
+        body,
+    }
+}
+
+/// Identity: the builder still reads as one top-level item.
+fn top_level(defn: Defn) -> Defn {
+    defn
+}
+
+/// A pre/post pair the prover must discharge.
+fn proven(pre: Expr, post: Expr) -> Contract {
+    Contract { pre, post }
 }
