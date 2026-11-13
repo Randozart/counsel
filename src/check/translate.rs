@@ -1406,6 +1406,40 @@ mod invariant_tests {
         assert!(exit.contains("term acc;"), "term must be the returned value: {exit}");
     }
 
+    /// A loop body usually guards its update, and its bounds often name a local.
+    /// Both must reach the obligation's parameters: otherwise the emitted defn
+    /// names an undefined variable and the obligation is lost as a type error.
+    #[test]
+    fn guarded_update_and_bound_local_are_carried() {
+        let file = syn::parse_file(
+            "#[post(term >= 1)]\n#[invariant(best >= 1)]\nfn step(len: usize) -> usize { let mut best = 1; let half = len / 2; for d in 1..=half { if len % d == 0 { best = d; } } best }\n",
+        )
+        .expect("parse");
+        let (out, _warnings) = translate_file(&file).expect("emits the obligations");
+        let find = |wanted: &str| {
+            out.iter()
+                .find(|defn| defn.name == wanted)
+                .unwrap_or_else(|| panic!("missing {wanted}"))
+                .briev
+                .clone()
+        };
+        let preserve = find("step_preserve");
+        assert!(
+            preserve.contains("best: Int"),
+            "an assignment inside `if` must still be a parameter: {preserve}"
+        );
+        assert!(
+            preserve.contains("half: Int"),
+            "the loop bound names `half`, so it must be a parameter: {preserve}"
+        );
+        let init = find("step_init");
+        assert!(init.contains("best == 1"), "entry must pin best: {init}");
+        assert!(
+            init.contains("half == len / 2"),
+            "entry must pin the bound local: {init}"
+        );
+    }
+
     /// A repeated invariant is rejected, like a repeated `#[pre]` slot.
     #[test]
     fn duplicate_invariant_is_rejected() {
@@ -1567,9 +1601,9 @@ fn translate_loop_contracts(
         post,
     } = *contract;
     let shape = loop_shape(item_fn)?;
-    let mutated = assigned_names(&shape.body);
-    let all = loop_params(params, &mutated, &shape.var);
-    let pins = entry_pins(item_fn, shape.at, &mutated, &shape.var, &shape.lower)?;
+    let locals = loop_locals(item_fn, &shape);
+    let all = loop_params(params, &locals, &shape.var);
+    let pins = entry_pins(item_fn, shape.at, &locals, &shape.var, &shape.lower)?;
     let body_text = translate_block(&shape.body)?;
     let (var, lower, bound) = (&shape.var, &shape.lower, &shape.bound);
     // `lo..hi` stops at `i == hi`; `lo..=hi` runs one step further.
@@ -1614,11 +1648,64 @@ fn translate_loop_contracts(
     ])
 }
 
-/// Names assigned by a statement list (one level deep).
+/// Every local a loop obligation must carry as a parameter.
+///
+/// Two sources, because both are needed and neither implies the other:
+///   * `let` bindings made before the loop, which supply the loop bounds
+///     (`1..=half`) and the entry values VC1 pins;
+///   * anything the body assigns, which may be nested inside a guard.
+///
+/// Missing either yields a defn naming an undefined variable — a type error
+/// rather than a wrong verdict, but the obligation is lost either way.
+fn loop_locals(item_fn: &syn::ItemFn, shape: &LoopShape) -> Vec<String> {
+    let mut locals: Vec<String> = Vec::new();
+    for stmt in item_fn.block.stmts.iter().take(shape.at) {
+        let syn::Stmt::Local(local) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &local.pat else {
+            continue;
+        };
+        let name = pat.ident.to_string();
+        if !locals.contains(&name) {
+            locals.push(name);
+        }
+    }
+    for assigned in assigned_names(&shape.body) {
+        if !locals.contains(&assigned) {
+            locals.push(assigned);
+        }
+    }
+    locals
+}
+
+/// Names assigned by a statement list, including assignments nested inside
+/// `if`/`else`, blocks, and inner `for`/`while`/`loop` bodies.
 fn assigned_names(stmts: &[syn::Stmt]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    collect_assigned(stmts, &mut out);
+    out
+}
+
+/// Recursive worker for [`assigned_names`], recording each distinct target once.
+fn collect_assigned(stmts: &[syn::Stmt], out: &mut Vec<String>) {
     for stmt in stmts {
-        if let syn::Stmt::Expr(syn::Expr::Assign(assign), _) = stmt {
+        match stmt {
+            syn::Stmt::Expr(expr, _) => collect_assigned_expr(expr, out),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = local.init.as_ref() {
+                    collect_assigned_expr(&init.expr, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Record the target of an assignment wherever it appears in an expression.
+fn collect_assigned_expr(expr: &syn::Expr, out: &mut Vec<String>) {
+    match expr {
+        syn::Expr::Assign(assign) => {
             if let syn::Expr::Path(path) = assign.left.as_ref() {
                 if let Some(ident) = path.path.get_ident() {
                     let name = ident.to_string();
@@ -1627,8 +1714,23 @@ fn assigned_names(stmts: &[syn::Stmt]) -> Vec<String> {
                     }
                 }
             }
+            collect_assigned_expr(&assign.right, out);
         }
+        syn::Expr::If(if_expr) => {
+            collect_assigned(&if_expr.then_branch.stmts, out);
+            if let Some((_, else_expr)) = if_expr.else_branch.as_ref() {
+                collect_assigned_expr(else_expr, out);
+            }
+        }
+        syn::Expr::Block(block) => collect_assigned(&block.block.stmts, out),
+        syn::Expr::ForLoop(for_loop) => collect_assigned(&for_loop.body.stmts, out),
+        syn::Expr::While(while_loop) => collect_assigned(&while_loop.body.stmts, out),
+        syn::Expr::Loop(loop_expr) => collect_assigned(&loop_expr.body.stmts, out),
+        syn::Expr::Binary(binary) => {
+            collect_assigned_expr(&binary.left, out);
+            collect_assigned_expr(&binary.right, out);
+        }
+        _ => {}
     }
-    out
 }
 
