@@ -57,8 +57,8 @@ Worked walks: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
 One crate, one dependency:
 
 ```toml
-counsel = "0.1"                                        # runtime API + attributes
-counsel = { version = "0.1", features = ["static"] }   # + static verification
+counsel = "0.2"                                        # runtime API + attributes
+counsel = { version = "0.2", features = ["static"] }   # + static verification
 ```
 
 | Feature | Gives you | Needs Briev |

@@ -17,7 +17,7 @@
 
 [package]
 name = "counsel"
-version = "0.1.11"
+version = "0.2.0"
 edition = "2021"
 description = "Static and runtime pre/post-condition verification for Rust: the predicate core is authored in Briev and compiled to native, while contracts are discharged by Briev's own body prover. Lighter than Kani."
 license = "Apache-2.0 WITH LLVM-exception"
@@ -37,7 +37,7 @@ static = ["dep:syn", "dep:briev-verify", "dep:serde_json"]
 
 [dependencies]
 counsel-macros = { version = "0.1", path = "counsel-macros", optional = true }
-briev-verify = { path = "../briev-lang/briev-verify", optional = true }
+briev-verify = { version = "0.1", path = "../briev-lang/briev-verify", optional = true }
 serde_json = { version = "1", optional = true }
 syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit", "visit-mut"], optional = true }
 
