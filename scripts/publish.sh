@@ -46,6 +46,12 @@ dry_run() {
     return 1
 }
 
+# Prove the working tree verifies what it claims BEFORE packaging it. 0.1.6 and
+# 0.2.0 each shipped a construct that was already broken at publish time; this is
+# the gate that would have stopped both.
+echo "==> acceptance (working tree)"
+./scripts/acceptance.sh
+
 echo "==> dry-run: counsel-macros"
 dry_run counsel-macros
 
