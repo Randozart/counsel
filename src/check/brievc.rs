@@ -45,23 +45,179 @@ pub fn find_compiler() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("BRIEVC") {
         candidates.push(PathBuf::from(explicit));
     }
-    // The compiler this crate was built with. For a crates.io consumer that is
-    // the one `build.rs` fetched, so the static half works with no setup at
-    // all; without it the checker reports NoCompiler on a machine where the
-    // build had already downloaded a perfectly good compiler.
-    if let Some(baked) = option_env!("COUNSEL_BRIEVC_PATH") {
-        candidates.push(PathBuf::from(baked));
+    // A toolchain this crate already fetched on an earlier run.
+    if let Some(cached) = cached_binary() {
+        candidates.push(cached);
     }
     candidates.push(PathBuf::from("brievc"));
-    // The shared cache: still useful when the baked path was cleaned up but the
-    // downloaded toolchain is intact.
-    if let Some(cached) = option_env!("COUNSEL_BRIEVC_CACHE_BIN") {
-        candidates.push(PathBuf::from(cached));
-    }
     candidates.extend(sibling_builds());
     candidates
         .into_iter()
         .find(|candidate| supports_flag(candidate))
+}
+
+/// Pinned toolchain, fetched on first use when no compiler is installed.
+///
+/// The static half needs a `brievc` binary. Fetching it at the first check — not
+/// during the build — is what lets the default feature set stay free of Briev
+/// while `--features static` still works with no manual setup.
+const RELEASE_TAG: &str = "v0.1.4";
+const ASSET_STEM: &str = "brievc-linux-x86_64";
+/// sha256 of the pinned tarball; a mismatch aborts before the toolchain is used.
+const ASSET_SHA256: &str = "cabfc566ac50b600d20a3e34c768b33d24189bfc070c7ec41f22500b5989a7dc";
+
+/// Resolve a compiler, fetching the pinned toolchain when none is installed.
+///
+/// `COUNSEL_NO_DOWNLOAD=1` forbids the fetch, which is what an air-gapped or
+/// audited environment wants: the caller then sets `BRIEVC` or installs one.
+pub fn resolve_compiler() -> Result<PathBuf, Error> {
+    if let Some(found) = find_compiler() {
+        return Ok(found);
+    }
+    if std::env::var_os("COUNSEL_NO_DOWNLOAD").is_some() {
+        return Err(Error::NoCompiler);
+    }
+    download_toolchain()?;
+    cached_binary().ok_or(Error::NoCompiler)
+}
+
+/// The cache directory: `COUNSEL_CACHE_DIR`, else the XDG cache, else `~/.cache`.
+fn cache_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("COUNSEL_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("counsel")
+}
+
+/// Directory of the pinned, extracted toolchain inside the cache.
+fn install_dir() -> PathBuf {
+    cache_root().join(format!("brievc-{RELEASE_TAG}-{ASSET_STEM}"))
+}
+
+/// The pinned compiler, once extracted.
+fn cached_binary() -> Option<PathBuf> {
+    let binary = install_dir().join("bin").join("brievc");
+    binary.is_file().then_some(binary)
+}
+
+/// Find an executable on PATH (minimal `which`, no shell).
+fn which(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Whether a prebuilt asset is published for this platform.
+fn asset_supported() -> bool {
+    std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64"
+}
+
+/// Download, verify and extract the pinned toolchain into the cache.
+fn download_toolchain() -> Result<(), Error> {
+    if !asset_supported() {
+        return Err(Error::NoCompiler);
+    }
+    let install = install_dir();
+    let cache = cache_root();
+    std::fs::create_dir_all(&cache)
+        .map_err(|error| Error::Io(format!("cannot create `{}`: {error}", cache.display())))?;
+    let tarball = cache.join(format!("{ASSET_STEM}-{RELEASE_TAG}.tar.gz"));
+    let url = format!(
+        "https://github.com/Randozart/counsel/releases/download/{RELEASE_TAG}/{ASSET_STEM}.tar.gz"
+    );
+    fetch(&url, &tarball)?;
+    verify_sha256(&tarball)?;
+    extract(&tarball, &install)
+}
+
+/// Fetch `url` to `dest`, preferring curl and falling back to wget.
+fn fetch(url: &str, dest: &Path) -> Result<(), Error> {
+    let attempts: [(&str, Vec<&str>); 2] = [
+        ("curl", vec!["-fL", "--retry", "3", "-o"]),
+        ("wget", vec!["-q", "-O"]),
+    ];
+    for (tool, flags) in attempts {
+        if which(tool).is_none() {
+            continue;
+        }
+        let mut command = Command::new(tool);
+        command.args(&flags);
+        command.arg(dest).arg(url);
+        if command.status().is_ok_and(|status| status.success()) {
+            return Ok(());
+        }
+    }
+    Err(Error::Io(
+        "neither curl nor wget could download the pinned Briev compiler".to_string(),
+    ))
+}
+
+/// Refuse a tarball that does not match the pinned checksum.
+fn verify_sha256(tarball: &Path) -> Result<(), Error> {
+    let actual = sha256_of(tarball)?;
+    if actual == ASSET_SHA256 {
+        return Ok(());
+    }
+    Err(Error::Io(format!(
+        "brievc tarball checksum mismatch at `{}`: expected {ASSET_SHA256}, got {actual}. \
+         Delete that file and retry, or set BRIEVC to a compiler you trust.",
+        tarball.display()
+    )))
+}
+
+/// sha256 of a file, via `sha256sum` or `shasum -a 256`.
+fn sha256_of(file: &Path) -> Result<String, Error> {
+    for (tool, flags) in [("sha256sum", Vec::new()), ("shasum", vec!["-a", "256"])] {
+        if which(tool).is_none() {
+            continue;
+        }
+        let Ok(output) = Command::new(tool).args(&flags).arg(file).output() else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(digest) = stdout.split_whitespace().next() {
+            return Ok(digest.to_ascii_lowercase());
+        }
+    }
+    Err(Error::Io(format!(
+        "cannot verify the downloaded compiler at `{}`: neither sha256sum nor shasum is available",
+        file.display()
+    )))
+}
+
+/// Extract the tarball into `install`, keeping the `<stem>/bin/share` layout.
+fn extract(tarball: &Path, install: &Path) -> Result<(), Error> {
+    let staging = cache_root().join(format!(".staging-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)
+        .map_err(|error| Error::Io(format!("cannot create `{}`: {error}", staging.display())))?;
+    let status = Command::new("tar")
+        .arg("-xzf")
+        .arg(tarball)
+        .arg("-C")
+        .arg(&staging)
+        .status()
+        .map_err(|error| Error::Io(format!("cannot run tar: {error}")))?;
+    if !status.success() {
+        return Err(Error::Io(format!(
+            "cannot extract `{}` — is `tar` available?",
+            tarball.display()
+        )));
+    }
+    // Replace any previous install with the freshly extracted tree.
+    let _ = std::fs::remove_dir_all(install);
+    std::fs::rename(staging.join(ASSET_STEM), install)
+        .map_err(|error| Error::Io(format!("cannot move the compiler into place: {error}")))?;
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
 }
 
 /// Candidate compiler paths from a sibling `briev-lang` checkout.
@@ -95,7 +251,7 @@ pub fn discharge(defns: &[TranslatedFn]) -> Result<Discharge, Error> {
     if defns.is_empty() {
         return Ok(Discharge::default());
     }
-    let compiler = find_compiler().ok_or(Error::NoCompiler)?;
+    let compiler = resolve_compiler()?;
     let workdir = temp_workdir();
     std::fs::create_dir_all(&workdir)
         .map_err(|e| Error::Io(format!("{}: {e}", workdir.display())))?;
