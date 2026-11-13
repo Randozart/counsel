@@ -245,6 +245,7 @@ mod tests {
             proven: vec!["a".into()],
             unproven: vec!["b".into()],
             violated: vec!["c".into()],
+            names_authoritative: false,
         };
         assert_eq!(classify("a", &discharge), Outcome::Proven);
         assert_eq!(classify("b", &discharge), Outcome::Unproven);

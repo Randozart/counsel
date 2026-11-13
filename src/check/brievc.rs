@@ -25,6 +25,13 @@ pub struct Discharge {
     pub unproven: Vec<String>,
     /// Names with a concrete counterexample.
     pub violated: Vec<String>,
+    /// Whether `proven` came from the structured report rather than being
+    /// inferred from absence.
+    ///
+    /// When true every declaration the compiler proved is *named*, so a
+    /// declaration absent from all three lists was never examined — and silence
+    /// must never be read as a proof.
+    pub names_authoritative: bool,
 }
 
 /// Locate a `brievc` binary that supports `--verify-bodies`.
@@ -165,9 +172,38 @@ fn rejects_report_flag(stderr: &str) -> bool {
 }
 
 /// Attach the caller-known proof names to the discharge set.
+///
+/// `proven` is inferred from absence — every declaration the compiler did not
+/// mention. That is only sound if it reported on every declaration it was given,
+/// so the report's own count is used to check the accounting. When the numbers do
+/// not add up, some declaration was silently skipped (an unmodelled body, a
+/// failed inlining), and silence must never be read as proof: nothing inferred
+/// from absence is then reported as proven.
 fn settle(defns: &[TranslatedFn], mut discharge: Discharge) -> Discharge {
+    if discharge.names_authoritative {
+        // The report named everything it proved, so anything it named nowhere was
+        // never examined. Record it as unproven rather than letting absence read
+        // as success.
+        discharge.unproven.extend(unreported(defns, &discharge));
+        return discharge;
+    }
+    // A toolchain that reports no names cannot be checked this way; keep the
+    // historical inference from absence.
     discharge.proven = proven_names(defns, &discharge);
     discharge
+}
+
+/// Declarations the report mentioned nowhere, so they were never examined.
+fn unreported(defns: &[TranslatedFn], discharge: &Discharge) -> Vec<String> {
+    defns
+        .iter()
+        .filter(|defn| {
+            !discharge.proven.iter().any(|name| name == &defn.name)
+                && !discharge.unproven.iter().any(|name| name == &defn.name)
+                && !discharge.violated.iter().any(|name| name == &defn.name)
+        })
+        .map(|defn| defn.name.clone())
+        .collect()
 }
 
 /// Parse the three-way verdict out of the compiler's stderr.
@@ -245,10 +281,16 @@ fn temp_workdir() -> PathBuf {
 fn read_report(path: &Path) -> Option<Discharge> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    // A report that names its proofs can be checked; one that reports only a
+    // total cannot tell "proved" apart from "never examined". The proven list
+    // also covers the compiler's own prelude, which is why consumers intersect
+    // it with the declarations they submitted.
+    let names_authoritative = value.get("proven").is_some_and(serde_json::Value::is_array);
     Some(Discharge {
-        proven: Vec::new(),
+        proven: report_names(&value, "proven"),
         unproven: report_names(&value, "unproven"),
         violated: report_names(&value, "violated"),
+        names_authoritative,
     })
 }
 
@@ -290,5 +332,87 @@ mod tests {
     #[test]
     fn missing_report_is_none() {
         assert!(read_report(Path::new("/nonexistent/verify-report.json")).is_none());
+    }
+
+    /// Two declarations, a report that names only one of them as proved.
+    fn skipped_report() -> Discharge {
+        Discharge {
+            proven: vec!["b".into()],
+            unproven: Vec::new(),
+            violated: Vec::new(),
+            names_authoritative: true,
+        }
+    }
+
+    /// Two declarations with empty bodies; only the names matter here.
+    fn two_defns() -> Vec<TranslatedFn> {
+        vec![
+            TranslatedFn {
+                name: "a".into(),
+                briev: String::new(),
+            },
+            TranslatedFn {
+                name: "b".into(),
+                briev: String::new(),
+            },
+        ]
+    }
+
+    /// The report proved one declaration and mentioned the other nowhere, which
+    /// means the compiler skipped it. Skipped is not proved.
+    #[test]
+    fn settle_fails_closed_when_a_declaration_is_unreported() {
+        let discharge = Discharge {
+            proven: vec!["b".into()],
+            unproven: Vec::new(),
+            violated: Vec::new(),
+            names_authoritative: true,
+        };
+        let settled = settle(&two_defns(), discharge);
+        assert!(
+            settled.unproven.contains(&"a".to_string()),
+            "an unreported declaration must become unproven: {:?}",
+            settled.unproven
+        );
+        assert!(
+            !settled.unproven.contains(&"b".to_string()),
+            "a declaration the report proved must stay proved: {:?}",
+            settled.unproven
+        );
+    }
+
+    /// A report that accounts for every declaration adds nothing.
+    #[test]
+    fn settle_trusts_a_complete_named_report() {
+        let discharge = Discharge {
+            proven: vec!["a".into()],
+            unproven: vec!["b".into()],
+            violated: Vec::new(),
+            names_authoritative: true,
+        };
+        let settled = settle(&two_defns(), discharge);
+        assert_eq!(settled.unproven, vec!["b".to_string()]);
+    }
+
+    /// Without names there is nothing to check, so the historical inference stays.
+    #[test]
+    fn settle_keeps_inference_without_names() {
+        let settled = settle(&two_defns(), Discharge::default());
+        assert_eq!(settled.proven.len(), 2);
+    }
+
+    /// A report that lists proven names is marked authoritative.
+    #[test]
+    fn reads_named_proofs() {
+        let path = std::env::temp_dir().join(format!("counsel-named-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"proven":[{"name":"ok_one","reason":""}],"unproven":[],"violated":[]}"#,
+        )
+        .expect("write report");
+        let discharge = read_report(&path).expect("report parsed");
+        let _ = std::fs::remove_file(&path);
+        assert!(discharge.names_authoritative);
+        assert_eq!(discharge.proven, vec!["ok_one".to_string()]);
     }
 }

@@ -1825,8 +1825,9 @@ fn translate_loop_contracts(
     // The function's precondition holds at loop entry, so it belongs in every
     // antecedent: a bound like `n <= 1000` is what makes the arithmetic
     // wraparound-free, and without it nothing bounded can be proved.
-    // No parentheses anywhere: `encodable` rejects `Expr::Paren`, which would
-    // silently skip the solver instead of failing loudly.
+    // No parentheses: Briev's parser normalises them away (its `Expr` has no
+    // paren node), so emitting them would add noise to the text without changing
+    // the meaning.
     let pre_text = if pre == "true" {
         String::new()
     } else {
