@@ -36,6 +36,10 @@ fn outcome_of(name: &str, report: &briev_verify::verify::BodyReport) -> Outcome 
         return Outcome::Unproven;
     }
     if report.proven.iter().any(|proven| proven == name) {
+        // A case proves one concrete input, never the general contract.
+        if name.contains("__case") {
+            return Outcome::ProvenForCase;
+        }
         return Outcome::Proven;
     }
     Outcome::Unproven
@@ -56,8 +60,13 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
         .iter()
         .map(|item| {
             let name = name_of(item);
+            // Classification uses the generated name; the report speaks about the
+            // function the author wrote (`double__case0` is `double (case 0)`).
             let outcome = outcome_of(&name, &report);
-            FnVerdict { name, outcome }
+            FnVerdict {
+                name: super::display_name(&name),
+                outcome,
+            }
         })
         .collect();
     Ok(Report {

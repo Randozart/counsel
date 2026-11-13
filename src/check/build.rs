@@ -878,6 +878,163 @@ fn loop_contracts(item_fn: &syn::ItemFn, invariant: &syn::Expr) -> Result<Vec<To
     Ok(vec![init, preserve, exit])
 }
 
+/// Case values for each `#[case(...)]`, arity-checked against the parameters.
+fn case_values(
+    attrs: &[syn::Attribute],
+    param_count: usize,
+    name: &str,
+) -> Result<Vec<Vec<i64>>, Error> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("case") {
+            continue;
+        }
+        let node: syn::Expr = attr
+            .parse_args()
+            .map_err(|e| Error::Parse(format!("`#[case(...)]`: {e}")))?;
+        let values = case_literals(&node)?;
+        if values.len() != param_count {
+            return Err(Error::Contract(format!(
+                "`#[case(...)]` on `{name}` supplies {} value(s) but the function takes {param_count}",
+                values.len()
+            )));
+        }
+        out.push(values);
+    }
+    Ok(out)
+}
+
+/// Flatten one case: `#[case(5)]` or `#[case((2, 3))]`.
+fn case_literals(node: &syn::Expr) -> Result<Vec<i64>, Error> {
+    match node {
+        syn::Expr::Tuple(tuple) => tuple.elems.iter().map(case_literal).collect(),
+        other => Ok(vec![case_literal(other)?]),
+    }
+}
+
+/// A case value must be an integer literal, optionally negated.
+fn case_literal(node: &syn::Expr) -> Result<i64, Error> {
+    literal_int(node).ok_or_else(|| {
+        Error::Contract("`#[case(...)]` values must be integer literals".to_string())
+    })
+}
+
+/// Replace parameters with their concrete case values in a built expression.
+fn substitute_expr(node: &Expr, map: &[(String, i64)]) -> Expr {
+    match node {
+        Expr::Identifier(name) => match map.iter().find(|(param, _)| param == name) {
+            Some((_, value)) => lit(*value),
+            None => node.clone(),
+        },
+        Expr::BinaryOp(kind, left, right) => Expr::BinaryOp(
+            kind.clone(),
+            Box::new(substitute_expr(left, map)),
+            Box::new(substitute_expr(right, map)),
+        ),
+        Expr::UnaryOp(kind, inner) => {
+            Expr::UnaryOp(kind.clone(), Box::new(substitute_expr(inner, map)))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Replace parameters with their concrete case values in a built statement list.
+fn substitute_stmts(stmts: &[Statement], map: &[(String, i64)]) -> Vec<Statement> {
+    stmts.iter().map(|stmt| substitute_stmt(stmt, map)).collect()
+}
+
+/// Replace parameters with their concrete case values in one statement.
+fn substitute_stmt(stmt: &Statement, map: &[(String, i64)]) -> Statement {
+    match stmt {
+        Statement::Assign(target, value) => Statement::Assign(
+            substitute_expr(target, map),
+            substitute_expr(value, map),
+        ),
+        Statement::Term(Some(value)) => Statement::Term(Some(substitute_expr(value, map))),
+        Statement::Guarded(cond, body) => {
+            Statement::Guarded(substitute_expr(cond, map), substitute_stmts(body, map))
+        }
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: expr.as_ref().map(|value| substitute_expr(value, map)),
+            modifiers: modifiers.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// The parameter names, in order.
+fn parameter_names(item_fn: &syn::ItemFn) -> Vec<String> {
+    item_fn
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(pat_ty) => match pat_ty.pat.as_ref() {
+                syn::Pat::Ident(pat) => Some(pat.ident.to_string()),
+                _ => None,
+            },
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect()
+}
+
+/// Instantiate a contract at each `#[case(...)]` input.
+///
+/// A case proves one concrete input, not the general contract, and is named
+/// `<fn>__caseN` so the verdict can never be mistaken for a general proof.
+fn case_definitions(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
+    let name = item_fn.sig.ident.to_string();
+    let params = parameter_names(item_fn);
+    let cases = case_values(&item_fn.attrs, params.len(), &name)?;
+    if cases.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Substitution is by name, so a body that rebinds a parameter would make the
+    // case prove something other than the call it names.
+    for stmt in &item_fn.block.stmts {
+        let syn::Stmt::Local(local) = stmt else {
+            continue;
+        };
+        let syn::Pat::Ident(pat) = &local.pat else {
+            continue;
+        };
+        let rebound = pat.ident.to_string();
+        if params.contains(&rebound) {
+            return Err(Error::Contract(format!(
+                "`#[case(...)]` on `{name}` cannot be applied: the body rebinds `{rebound}`"
+            )));
+        }
+    }
+    let pre = conjunction(precondition(item_fn)?).unwrap_or(Expr::Bool(true));
+    let post = contract_attr(&item_fn.attrs, "post")?
+        .map(|node| expr(&node, true))
+        .transpose()?
+        .unwrap_or(Expr::Bool(true));
+    let body = block(&item_fn.block.stmts)?;
+    let mut out = Vec::new();
+    for (index, values) in cases.iter().enumerate() {
+        let map: Vec<(String, i64)> = params.iter().cloned().zip(values.iter().copied()).collect();
+        out.push(TopLevel::Definition(Definition::prover_defn(
+            format!("{name}__case{index}"),
+            Contract::proven(
+                substitute_expr(&pre, &map),
+                substitute_expr(&post, &map),
+            ),
+            substitute_stmts(&body, &map),
+        )));
+    }
+    Ok(out)
+}
+
 /// Build one contracted function as a prover input.
 fn definition(item_fn: &syn::ItemFn) -> Result<Vec<TopLevel>, Error> {
     let name = item_fn.sig.ident.to_string();
@@ -910,7 +1067,14 @@ pub fn definitions(file: &syn::File) -> Result<Vec<TopLevel>, Error> {
         if !has_contract {
             continue;
         }
+        let is_loop = item_fn
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("invariant"));
         out.extend(definition(item_fn)?);
+        if !is_loop {
+            out.extend(case_definitions(item_fn)?);
+        }
     }
     Ok(out)
 }

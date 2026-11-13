@@ -135,6 +135,16 @@ impl Report {
 ///
 /// Functions without `#[pre]`/`#[post]` are ignored — only written
 /// contracts are obligations.
+#[cfg(feature = "static-lib")]
+pub fn check_source(source: &str) -> Result<Report, Error> {
+    inprocess::check_source(source)
+}
+
+/// Verify the contracted functions in a Rust source string.
+///
+/// Functions without `#[pre]`/`#[post]` are ignored — only written contracts are
+/// obligations.
+#[cfg(not(feature = "static-lib"))]
 pub fn check_source(source: &str) -> Result<Report, Error> {
     let file = syn::parse_file(source).map_err(|e| Error::Parse(e.to_string()))?;
     // A single unsupported function must not hide the others. `translate_file`
@@ -213,7 +223,7 @@ fn assemble(translated: &[TranslatedFn], discharge: &Discharge) -> Report {
 ///
 /// The generated defn name keeps the case distinguishable while checking; the
 /// report should speak about the function the author wrote.
-fn display_name(name: &str) -> String {
+pub(crate) fn display_name(name: &str) -> String {
     match name.split_once("__case") {
         Some((base, index)) => format!("{base} (case {index})"),
         None => name.to_string(),
