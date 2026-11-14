@@ -126,6 +126,18 @@ fn describe(expr: &syn::Expr) -> String {
         syn::Expr::Await(_) => "an `.await`".to_string(),
         syn::Expr::Unsafe(_) => "an `unsafe` block".to_string(),
         syn::Expr::Repeat(_) => "a repeated array literal".to_string(),
+        syn::Expr::Macro(_) => "a macro call".to_string(),
+        syn::Expr::Group(_) => "a grouped expression".to_string(),
+        syn::Expr::ForLoop(_) => "a `for` loop in value position".to_string(),
+        syn::Expr::Break(_) => "a `break`".to_string(),
+        syn::Expr::Continue(_) => "a `continue`".to_string(),
+        syn::Expr::Const(_) => "a `const` block".to_string(),
+        syn::Expr::Infer(_) => "an inferred type".to_string(),
+        syn::Expr::RawAddr(_) => "a raw address".to_string(),
+        syn::Expr::Return(_) => "a `return` in value position".to_string(),
+        syn::Expr::Async(_) => "an `async` block".to_string(),
+        syn::Expr::Yield(_) => "a `yield`".to_string(),
+        syn::Expr::TryBlock(_) => "a `try` block".to_string(),
         _ => "an expression outside the integer subset".to_string(),
     }
 }
@@ -1211,6 +1223,19 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
         }
         syn::visit_mut::visit_expr_mut(self, node);
         if self.failure.is_some() {
+            return;
+        }
+        // A macro in value position produces a value we do not model (`vec![..]`,
+        // `format!(..)`), so it becomes an opaque symbol on the same terms as an
+        // unmodelled call: occurrence-distinct, nothing assumed, arguments dropped.
+        // Statement-position macros (`println!`, `assert!`) are a different path and
+        // stay refused.
+        if matches!(node, syn::Expr::Macro(_)) {
+            if !self.mint_opaque(node) {
+                self.failure = Some(Error::Unsupported(
+                    "a macro call could not be treated as opaque".to_string(),
+                ));
+            }
             return;
         }
         let syn::Expr::Call(call) = node else { return };
