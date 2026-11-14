@@ -234,7 +234,8 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
         // false `Proven`. Resolving here (not only in the inliner) is what makes
         // `.len()` usable inside `#[pre]`/`#[post]`, which the inliner never visits.
         syn::Expr::MethodCall(method) => {
-            if method.method.to_string() != "len" {
+            let name = method.method.to_string();
+            if name != "len" && name != "is_empty" {
                 return Err(Error::Unsupported(format!(
                     "unsupported expression (pure-integer subset): {}",
                     describe(node)
@@ -242,7 +243,16 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
             }
             match method.receiver.as_ref() {
                 syn::Expr::Path(path) => match path.path.get_ident() {
-                    Some(ident) => Ok(Expr::Name(format!("len_{ident}"))),
+                    Some(ident) => {
+                        let len = Expr::Name(format!("len_{ident}"));
+                        if name == "len" {
+                            Ok(len)
+                        } else {
+                            // `is_empty()` is `len == 0`; sound for a collection, and an
+                            // unbound `len_x` for anything else (unproven, never false).
+                            Ok(binary(BinOp::Eq, len, lit(0)))
+                        }
+                    }
                     None => Err(Error::Unsupported(
                         "`len` on a path expression is not supported".to_string(),
                     )),
@@ -1375,6 +1385,45 @@ impl Inliner<'_> {
             Err(_) => false,
         }
     }
+
+    /// Rewrite a collection-length-mutating call into the assignment/guard that updates
+    /// the tracked length. Exact where possible: `push` +1, `pop` saturating -1,
+    /// `clear` 0, `extend` by a tracked length. `extend` by an opaque length is
+    /// conservatively reset to a fresh symbol — it never keeps a stale length that a
+    /// later postcondition could mistake for the real (grown) value.
+    fn collection_mutation(
+        &mut self,
+        method: &str,
+        receiver: &str,
+        arg: Option<&syn::Expr>,
+    ) -> Option<syn::Expr> {
+        let len: syn::Ident = syn::parse_str(&format!("len_{receiver}")).ok()?;
+        match method {
+            "push" => Some(syn::parse_quote!(#len = #len + 1)),
+            "clear" => Some(syn::parse_quote!(#len = 0)),
+            // pop is ARITHMETIC (`len - 1`), not a guarded saturate: the walker does not
+            // prune guard branches, so a guarded pop-at-empty could not discharge. A pop
+            // below zero is a conservative false-Violated, never a false-Proven.
+            "pop" => Some(syn::parse_quote!(#len = #len - 1)),
+            "extend" => {
+                if let Some(syn::Expr::Path(path)) = arg {
+                    if let Some(ident) = path.path.get_ident() {
+                        let name = ident.to_string();
+                        if self.collections.contains(&name) {
+                            let other: syn::Ident = syn::parse_str(&format!("len_{name}")).ok()?;
+                            return Some(syn::parse_quote!(#len = #len + #other));
+                        }
+                    }
+                }
+                // Growth is unknown: bind to a fresh symbol so no stale-length claim
+                // survives; a `>= 0` contract stays honest.
+                let marker: syn::Ident = syn::parse_str(&format!("__uf{}", self.opaque)).ok()?;
+                self.opaque += 1;
+                Some(syn::parse_quote!(#len = #marker))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl syn::visit_mut::VisitMut for Inliner<'_> {
@@ -1427,9 +1476,24 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
                 _ => None,
             };
             if let Some(recv) = receiver {
-                if self.collections.contains(&recv) && call.method.to_string() == "len" {
-                    if let Ok(replacement) = syn::parse_str::<syn::Expr>(&format!("len_{recv}")) {
-                        *node = replacement;
+                if self.collections.contains(&recv) {
+                    let method = call.method.to_string();
+                    if method == "len" {
+                        if let Ok(replacement) = syn::parse_str::<syn::Expr>(&format!("len_{recv}"))
+                        {
+                            *node = replacement;
+                            return;
+                        }
+                    }
+                    if method == "is_empty" {
+                        // `v.is_empty()` is `len == 0`; handled in expr() (M1c). Keep the
+                        // call visible so it reaches the translation of a condition.
+                        return;
+                    }
+                    if let Some(rewritten) =
+                        self.collection_mutation(&method, &recv, call.args.first())
+                    {
+                        *node = rewritten;
                         return;
                     }
                 }

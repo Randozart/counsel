@@ -595,6 +595,67 @@ mod tests {
         );
     }
 
+    /// M1d: `push` tracks the length exactly — two pushes on an empty base give 2.
+    #[test]
+    fn push_tracks_length_exactly() {
+        assert_eq!(
+            verdicts(
+                "#[pre(v.len() == 0)]\n#[post(term == 2)]\nfn f(v: Vec<i64>) -> usize { v.push(1); v.push(2); v.len() }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// M1d: `pop` lowers the tracked length by one (arithmetic). Popping below zero is
+    /// a conservative false-Violated, never a false-Proven - so the kernel asserts the
+    /// honest non-empty case.
+    #[test]
+    fn pop_lowers_length_by_one() {
+        assert_eq!(
+            verdicts(
+                "#[pre(v.len() == 2)]\n#[post(term == 1)]\nfn g(v: Vec<i64>) -> usize { v.pop(); v.len() }\n"
+            ),
+            vec![("g".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// M1d: `extend` by a tracked collection adds its exact length.
+    #[test]
+    fn extend_adds_a_tracked_length() {
+        assert_eq!(
+            verdicts(
+                "#[pre(target.len() == 0 && values.len() == 2)]\n#[post(term == 2)]\n\
+                 fn h(target: Vec<i64>, values: Vec<i64>) -> usize { target.extend(values); target.len() }\n"
+            ),
+            vec![("h".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// M1d: `extend` by an opaque length must NOT let a stale-length claim survive —
+    /// a contract asserting the result is a concrete number stays unproven, never falsely
+    /// Proven.
+    #[test]
+    fn opaque_extend_does_not_preserve_a_stale_length() {
+        assert_eq!(
+            verdicts(
+                "#[post(term == 3)]\nfn k(target: Vec<i64>) -> usize { target.extend(mk()); target.len() }\n"
+            ),
+            vec![("k".to_string(), Outcome::Unproven)]
+        );
+    }
+
+    /// M1d: `is_empty()` is exactly `len == 0` - the mapping itself is proved without a
+    /// guard, by comparing the two forms in the postcondition.
+    #[test]
+    fn is_empty_iff_length_zero() {
+        assert_eq!(
+            verdicts(
+                "#[post(v.is_empty() == (v.len() == 0))]\nfn m(v: Vec<i64>) -> usize { 0 }\n"
+            ),
+            vec![("m".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
