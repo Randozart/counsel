@@ -540,6 +540,20 @@ mod tests {
         );
     }
 
+    /// P2: a collection parameter's `.len()` is a non-negative length fact, so a
+    /// contract over the length discharges.
+    #[test]
+    fn a_collection_length_is_a_non_negative_fact() {
+        assert_eq!(
+            verdicts("#[post(term >= 0)]\nfn f(v: Vec<i64>) -> usize { v.len() }\n"),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+        assert_eq!(
+            verdicts("#[post(term >= 0)]\nfn g(s: String) -> usize { s.len() }\n"),
+            vec![("g".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {

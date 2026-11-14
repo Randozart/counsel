@@ -768,6 +768,11 @@ fn precondition(item_fn: &syn::ItemFn) -> Result<Vec<Expr>, Error> {
     let name = item_fn.sig.ident.to_string();
     let facts = signature_facts(&name, &item_fn.sig)?;
     let mut parts: Vec<Expr> = facts.into_iter().filter_map(|(_, fact)| fact).collect();
+    // P2: a collection parameter's length is a non-negative fact, so `.len()` and
+    // `#[post(term >= 0)]` discharge.
+    for param in collection_params(&item_fn.sig) {
+        parts.push(binary(BinOp::Ge, ident(&format!("len_{param}")), lit(0)));
+    }
     if let Some(node) = contract_attr(&item_fn.attrs, "pre")? {
         parts.push(expr(&node, true)?);
     }
@@ -1244,6 +1249,41 @@ pub struct Inlined {
     pub methods: usize,
 }
 
+/// Whether a type is a collection whose `.len()` is a length fact (P2).
+fn is_collection(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Slice(_) => true,
+        syn::Type::Reference(reference) => match reference.elem.as_ref() {
+            // `&str` has a `.len()`; syn 2 has no Type::Str, it is a path named str.
+            syn::Type::Path(path) if path.path.is_ident("str") => true,
+            other => is_collection(other),
+        },
+        syn::Type::Path(path) => {
+            let last = path.path.segments.last().map(|segment| segment.ident.to_string());
+            matches!(
+                last.as_deref(),
+                Some("Vec" | "String" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
+            )
+        }
+        _ => false,
+    }
+}
+
+/// The names of a signature's collection-typed parameters (P2).
+fn collection_params(sig: &syn::Signature) -> Vec<String> {
+    let mut out = Vec::new();
+    for input in &sig.inputs {
+        if let syn::FnArg::Typed(pat_ty) = input {
+            if let syn::Pat::Ident(pat) = pat_ty.pat.as_ref() {
+                if is_collection(&pat_ty.ty) {
+                    out.push(pat.ident.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn inline_calls(
     item_fn: &syn::ItemFn,
     sums: &std::collections::HashMap<String, Summary>,
@@ -1253,6 +1293,7 @@ pub fn inline_calls(
     let mut inliner = Inliner {
         sums,
         table,
+        collections: collection_params(&item_fn.sig).into_iter().collect(),
         stack: Vec::new(),
         failure: None,
         opaque: 0,
@@ -1275,6 +1316,8 @@ pub fn inline_calls(
 struct Inliner<'a> {
     sums: &'a std::collections::HashMap<String, Summary>,
     table: &'a TypeTable,
+    /// Collection-typed parameter names; `.len()` on one is a length fact, not opaque.
+    collections: std::collections::HashSet<String>,
     stack: Vec<String>,
     failure: Option<Error>,
     /// How many opaque values have been minted for this function (L2a).
@@ -1348,12 +1391,22 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
         // Integer methods (`.max`, `.min`, `.abs`, …) already have real semantics
         // downstream, so they must not be preempted here — only an unmodelled method
         // becomes opaque. Computing this before the mutable borrow keeps both legal.
-        let modelled_method = match node {
-            syn::Expr::MethodCall(call) => integer_method(call).is_some(),
-            _ => true,
-        };
-        if let syn::Expr::MethodCall(_) = node {
-            if !modelled_method && self.mint_opaque(node) {
+        if let syn::Expr::MethodCall(call) = node {
+            // P2: `.len()` on a collection-typed parameter is the length symbol `len_v`,
+            // pinned `>= 0` by the initial facts, not an opaque value.
+            let receiver = match call.receiver.as_ref() {
+                syn::Expr::Path(path) => path.path.get_ident().map(|id| id.to_string()),
+                _ => None,
+            };
+            if let Some(recv) = receiver {
+                if self.collections.contains(&recv) && call.method.to_string() == "len" {
+                    if let Ok(replacement) = syn::parse_str::<syn::Expr>(&format!("len_{recv}")) {
+                        *node = replacement;
+                        return;
+                    }
+                }
+            }
+            if integer_method(call).is_none() && self.mint_opaque(node) {
                 self.methods += 1;
             }
             return;
