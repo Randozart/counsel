@@ -130,7 +130,16 @@ fn print_human(reports: &[(PathBuf, Report)]) {
         // 12k functions would otherwise be unreadable — use --format json for detail.
         if !multiple {
             for skip in &report.skips {
-                eprintln!("not checked: {}: {}", skip.name, skip.reason);
+                match &skip.body {
+                    None => eprintln!(
+                        "not checked: {}: {} (body is in subset)",
+                        skip.name, skip.reason
+                    ),
+                    Some(reason) => eprintln!(
+                        "not checked: {}: {} — body: {}",
+                        skip.name, skip.reason, reason
+                    ),
+                }
             }
         } else if !report.skips.is_empty() {
             println!("  {} not checked", report.skips.len());
