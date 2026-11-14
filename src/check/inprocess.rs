@@ -153,6 +153,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     // Calls are resolved on the `syn` tree first, so the builder only ever sees
     // value expressions. Summaries are computed once for the whole file.
     let sums = build::build_summaries(&file.items);
+    let table = build::type_table(&file.items);
     let mut candidates: Vec<(String, syn::ItemFn)> = Vec::new();
     let mut excluded = 0usize;
     collect_functions(&file.items, &mut candidates, &mut excluded);
@@ -161,7 +162,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             // Enumerate it anyway: an unannotated function is neither verified nor
             // unknown, it was never an obligation. Reporting the skip is what makes
             // a census over a real codebase possible at all.
-            let (body, body_code, opaque) = match build::probe_body(item_fn, &sums) {
+            let (body, body_code, opaque) = match build::probe_body(item_fn, &sums, &table) {
                 Ok(assumptions) => (None, None, assumptions),
                 Err(reason) => (
                     Some(reason.to_string()),
@@ -180,7 +181,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             continue;
         }
         contracted += 1;
-        let inlined = match build::inline_calls(item_fn, &sums) {
+        let inlined = match build::inline_calls(item_fn, &sums, &table) {
             Ok(result) => {
                 opaque_assumed += result.unresolved;
                 methods_assumed += result.methods;
@@ -441,6 +442,38 @@ mod tests {
             verdicts("#[pre(s.x >= 0)]\n#[post(term >= 0)]\nfn g(s: S) -> i64 { s.x + 1 }\n"),
             vec![("g".to_string(), Outcome::Proven)]
         );
+    }
+
+    /// D1: a `match` over a locally constructed enum variant lands by tag comparison.
+    #[test]
+    fn a_match_over_a_constructed_variant_discharges() {
+        assert_eq!(
+            verdicts(
+                "enum E { A, B }\n#[post(term == 1)]\nfn f() -> i64 { match E::A { E::A => 1, _ => 0 } }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// D1: a tuple variant carries a tag too; the payload is dropped, the arm still
+    /// lands.
+    #[test]
+    fn a_match_over_a_payload_variant_discharges() {
+        assert_eq!(
+            verdicts(
+                "enum E { V(i64) }\n#[post(term == 1)]\nfn f() -> i64 { match E::V(5) { E::V(_) => 1, _ => 0 } }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// D1: an enum that is not declared in this file stays opaque, so matching it is
+    /// refused rather than silently assumed to be any variant. The sound direction is
+    /// no verdict at all.
+    #[test]
+    fn a_match_over_a_foreign_enum_is_refused() {
+        check_source("#[post(term == 1)]\nfn f() -> i64 { match W::A { W::A => 1, _ => 0 } }\n")
+            .expect_err("a foreign-enum match has no known tags");
     }
 
     /// A true identity is discharged with no compiler, no text and no process.

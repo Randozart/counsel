@@ -102,9 +102,13 @@ fn domain_fact(name: &str, width: &str) -> Option<Expr> {
 /// guessing at a shape Rust has not told us about.
 fn field_read(field: &syn::ExprField) -> Result<Expr, Error> {
     let owner = match field.base.as_ref() {
-        syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.to_string()).ok_or_else(
-            || Error::Unsupported("field of a path expression is not supported".to_string()),
-        )?,
+        syn::Expr::Path(path) => path
+            .path
+            .get_ident()
+            .map(|ident| ident.to_string())
+            .ok_or_else(|| {
+                Error::Unsupported("field of a path expression is not supported".to_string())
+            })?,
         _ => {
             return Err(Error::Unsupported(
                 "field access on a nested expression is not supported".to_string(),
@@ -1207,10 +1211,12 @@ pub struct Inlined {
 pub fn inline_calls(
     item_fn: &syn::ItemFn,
     sums: &std::collections::HashMap<String, Summary>,
+    table: &TypeTable,
 ) -> Result<Inlined, Error> {
     let mut inlined = item_fn.clone();
     let mut inliner = Inliner {
         sums,
+        table,
         stack: Vec::new(),
         failure: None,
         opaque: 0,
@@ -1232,6 +1238,7 @@ pub fn inline_calls(
 /// Substitutes summary-able calls; leaves anything else for the builder.
 struct Inliner<'a> {
     sums: &'a std::collections::HashMap<String, Summary>,
+    table: &'a TypeTable,
     stack: Vec<String>,
     failure: Option<Error>,
     /// How many opaque values have been minted for this function (L2a).
@@ -1266,10 +1273,30 @@ impl Inliner<'_> {
 impl syn::visit_mut::VisitMut for Inliner<'_> {
     /// Rewrite one expression node, recursing first so nested calls resolve.
     fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        // A same-file variant CONSTRUCTION `E::V(..)` is a tag constant (enum
+        // construction is pure). Replacing the whole call BEFORE recursion is the only
+        // correct place: if we recursed first, the func `E::V` would be tagged as a bare
+        // path, the call handler would then see a literal func and give up, and the
+        // construction would silently become opaque.
+        if let syn::Expr::Call(call) = node {
+            if let syn::Expr::Path(path) = call.func.as_ref() {
+                if let Some(tag) = path_variant_tag(&path.path, self.table) {
+                    *node = syn::parse_quote!(#tag);
+                    return;
+                }
+            }
+        }
+        // A bare unit-variant value (`E::A`, no call) is a tag constant too, so it can
+        // be a scrutinee or the receiver of a `match`/method and be compared by tag.
+        if let syn::Expr::Path(path) = node {
+            if let Some(tag) = path_variant_tag(&path.path, self.table) {
+                *node = syn::parse_quote!(#tag);
+            }
+        }
         // Lower a literal `match` into `if`/`else` before recursing, so the arms are
         // visited by the rest of this pass like any other expression.
         if let syn::Expr::Match(node_match) = node {
-            if let Some(lowered) = lower_match(node_match) {
+            if let Some(lowered) = lower_match(node_match, self.table) {
                 *node = lowered;
             }
         }
@@ -1380,7 +1407,70 @@ fn direct_name(func: &syn::Expr) -> Option<String> {
     path.path.get_ident().map(|ident| ident.to_string())
 }
 
+/// The types declared in one file, indexed for resolution.
+///
+/// This is the lightweight rule derived from a heavier tool (§18): rust-analyzer
+/// validates Counsel's inference, and Counsel uses it, to turn `Enum::Variant(..)` into
+/// a tag constant — the one constructive fact a variant genuinely has. Things not in
+/// the table (other crates, parameters) stay opaque.
+#[derive(Debug, Default, Clone)]
+pub struct TypeTable {
+    /// Enum name -> variant names in declaration order. The index is the tag.
+    enums: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl TypeTable {
+    /// The tag of a variant, or `None` when `Enum` is not a known enum of this file.
+    pub fn variant_tag(&self, enum_name: &str, variant: &str) -> Option<i64> {
+        self.enums
+            .get(enum_name)?
+            .iter()
+            .position(|name| name == variant)
+            .map(|index| index as i64)
+    }
+}
+
+/// Build the type table from a file's top-level items.
+pub fn type_table(items: &[syn::Item]) -> TypeTable {
+    let mut table = TypeTable::default();
+    for item in items {
+        if let syn::Item::Enum(en) = item {
+            table.enums.insert(
+                en.ident.to_string(),
+                en.variants
+                    .iter()
+                    .map(|variant| variant.ident.to_string())
+                    .collect(),
+            );
+        }
+    }
+    table
+}
+
+/// The tag of `Enum::Variant` in a two-segment path expression, when it resolves.
+fn path_variant_tag(path: &syn::Path, table: &TypeTable) -> Option<i64> {
+    let segments = &path.segments;
+    if segments.len() != 2 {
+        return None;
+    }
+    let enum_name = segments[0].ident.to_string();
+    let variant = segments[1].ident.to_string();
+    table.variant_tag(&enum_name, &variant)
+}
+
+/// The tag a pattern names, when the pattern is a same-file enum variant.
+fn pat_variant_tag(pat: &syn::Pat, table: &TypeTable) -> Option<i64> {
+    let path = match pat {
+        syn::Pat::Path(pattern) => &pattern.path,
+        syn::Pat::TupleStruct(pattern) => &pattern.path,
+        syn::Pat::Struct(pattern) => &pattern.path,
+        _ => return None,
+    };
+    path_variant_tag(path, table)
+}
+
 /// Lower `match x { 1 => a, _ => b }` into `if x == 1 { a } else { b }`.
+
 ///
 /// Only the part of `match` that needs no type information is lowered: literal
 /// patterns (integers and booleans) plus a final wildcard arm. Everything else —
@@ -1393,9 +1483,18 @@ fn direct_name(func: &syn::Expr) -> Option<String> {
 ///    a literal. Lowering `match next() { .. }` would evaluate the call several times.
 /// 2. A **catch-all arm is required**. Without one the lowered chain would silently
 ///    become `... else { <last arm> }`, changing behaviour for unmatched values.
-fn lower_match(node: &syn::ExprMatch) -> Option<syn::Expr> {
+fn lower_match(node: &syn::ExprMatch, table: &TypeTable) -> Option<syn::Expr> {
     let scrutinee = match node.expr.as_ref() {
         syn::Expr::Path(_) | syn::Expr::Lit(_) => node.expr.as_ref().clone(),
+        // A constructor call is pure, so it is a valid scrutinee; the tag rewrite
+        // makes each duplicate comparison a constant. Any other call is refused to
+        // avoid duplicating a side-effecting expression.
+        syn::Expr::Call(call) => match call.func.as_ref() {
+            syn::Expr::Path(path) if path_variant_tag(&path.path, table).is_some() => {
+                node.expr.as_ref().clone()
+            }
+            _ => return None,
+        },
         _ => return None,
     };
     let (last, leading) = node.arms.split_last()?;
@@ -1410,12 +1509,21 @@ fn lower_match(node: &syn::ExprMatch) -> Option<syn::Expr> {
         if arm.guard.is_some() {
             return None;
         }
-        let value = literal_pattern(&arm.pat)?;
+        let value = pattern_value(&arm.pat, table)?;
         let body = arm.body.as_ref().clone();
         let condition: syn::Expr = syn::parse_quote!(#scrutinee == #value);
         lowered = syn::parse_quote!(if #condition { #body } else { #lowered });
     }
     Some(lowered)
+}
+
+/// The comparison constant a pattern names: a literal, or the tag of a same-file variant.
+fn pattern_value(pat: &syn::Pat, table: &TypeTable) -> Option<syn::Expr> {
+    if let Some(literal) = literal_pattern(pat) {
+        return Some(literal);
+    }
+    let tag = pat_variant_tag(pat, table)?;
+    Some(syn::parse_quote!(#tag))
 }
 
 /// The literal a pattern matches, when it is an integer or boolean literal.
@@ -1476,11 +1584,12 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
 pub fn probe_body(
     item_fn: &syn::ItemFn,
     sums: &std::collections::HashMap<String, Summary>,
+    table: &TypeTable,
 ) -> Result<usize, Error> {
     let mut probe = item_fn.clone();
     probe.attrs.push(syn::parse_quote!(#[pre(true)]));
     probe.attrs.push(syn::parse_quote!(#[post(true)]));
-    let Inlined { item, opaque, .. } = inline_calls(&probe, sums)?;
+    let Inlined { item, opaque, .. } = inline_calls(&probe, sums, table)?;
     definition_for(&item)?;
     // The count lets a census separate "translatable" from "translatable without
     // leaning on anything we did not model": a body built entirely from opaque values
