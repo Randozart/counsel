@@ -649,10 +649,20 @@ mod tests {
     #[test]
     fn is_empty_iff_length_zero() {
         assert_eq!(
-            verdicts(
-                "#[post(v.is_empty() == (v.len() == 0))]\nfn m(v: Vec<i64>) -> usize { 0 }\n"
-            ),
+            verdicts("#[post(v.is_empty() == (v.len() == 0))]\nfn m(v: Vec<i64>) -> usize { 0 }\n"),
             vec![("m".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// M2: the motivating brievc pattern — a push followed by a length comparison —
+    /// now proves, closing the pre-M1 model that claimed the length never changed.
+    #[test]
+    fn a_push_changes_the_tracked_length() {
+        assert_eq!(
+            verdicts(
+                "#[post(term == 1)]\nfn grew(v: &mut Vec<i64>, x: i64) -> bool { let b = v.len(); v.push(x); v.len() != b }\n"
+            ),
+            vec![("grew".to_string(), Outcome::Proven)]
         );
     }
 
