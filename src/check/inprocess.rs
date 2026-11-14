@@ -147,6 +147,9 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     // Calls with no summary are treated as opaque, which is sound but hides the
     // interprocedural gap. Count them so the file reports the assumption.
     let mut opaque_assumed = 0usize;
+    // Method calls are opaque too, and they may mutate their receiver, so the
+    // count is reported for the same reason.
+    let mut methods_assumed = 0usize;
     // Calls are resolved on the `syn` tree first, so the builder only ever sees
     // value expressions. Summaries are computed once for the whole file.
     let sums = build::build_summaries(&file.items);
@@ -172,6 +175,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
         let inlined = match build::inline_calls(item_fn, &sums) {
             Ok(result) => {
                 opaque_assumed += result.unresolved;
+                methods_assumed += result.methods;
                 result.item
             }
             Err(reason) => {
@@ -209,6 +213,11 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     if excluded > 0 {
         warnings.push(format!(
             "{excluded} test declaration(s) excluded from the census"
+        ));
+    }
+    if methods_assumed > 0 {
+        warnings.push(format!(
+            "{methods_assumed} method call(s) treated as opaque: their result and any\n             mutation of the receiver are unmodelled"
         ));
     }
     if opaque_assumed > 0 {

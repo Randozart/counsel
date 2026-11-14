@@ -1156,6 +1156,7 @@ pub struct Inlined {
     pub item: syn::ItemFn,
     pub opaque: usize,
     pub unresolved: usize,
+    pub methods: usize,
 }
 
 pub fn inline_calls(
@@ -1169,6 +1170,7 @@ pub fn inline_calls(
         failure: None,
         opaque: 0,
         unresolved: 0,
+        methods: 0,
     };
     syn::visit_mut::VisitMut::visit_item_fn_mut(&mut inliner, &mut inlined);
     match inliner.failure {
@@ -1177,6 +1179,7 @@ pub fn inline_calls(
             item: inlined,
             opaque: inliner.opaque,
             unresolved: inliner.unresolved,
+            methods: inliner.methods,
         }),
     }
 }
@@ -1191,6 +1194,10 @@ struct Inliner<'a> {
     /// How many of those stood in for an unresolved *call* (L6 gap), as opposed to
     /// an unmodelled constructor.
     unresolved: usize,
+    /// How many method calls were treated as opaque. A method may mutate its
+    /// receiver (`.push`), so this is reported like an unresolved call rather than
+    /// passing silently.
+    methods: usize,
 }
 
 impl Inliner<'_> {
@@ -1223,6 +1230,24 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
         }
         syn::visit_mut::visit_expr_mut(self, node);
         if self.failure.is_some() {
+            return;
+        }
+        // A method call is an operation we do not model. Treating it as opaque is
+        // sound in the same sense as an unmodelled call: the result is an arbitrary
+        // value, one symbol per occurrence, and nothing is asserted about it. It is
+        // counted separately because `.push` mutates its receiver - a dropped effect
+        // must be reported, never silently absorbed.
+        // Integer methods (`.max`, `.min`, `.abs`, …) already have real semantics
+        // downstream, so they must not be preempted here — only an unmodelled method
+        // becomes opaque. Computing this before the mutable borrow keeps both legal.
+        let modelled_method = match node {
+            syn::Expr::MethodCall(call) => integer_method(call).is_some(),
+            _ => true,
+        };
+        if let syn::Expr::MethodCall(_) = node {
+            if !modelled_method && self.mint_opaque(node) {
+                self.methods += 1;
+            }
             return;
         }
         // A macro in value position produces a value we do not model (`vec![..]`,

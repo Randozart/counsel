@@ -159,13 +159,16 @@ fn guarded_update_with_dynamic_bound_is_proven() {
 /// interpolate the whole syntax tree, which is accurate and unreadable.
 #[test]
 fn unsupported_construct_is_named_not_dumped() {
-    // `max`/`min`/`abs` are supported now, so the refusal must be tested with a
-    // method that genuinely is outside the subset.
-    let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.pow(2) }\n")
-        .expect_err("a method call outside the whitelist has no translation");
+    // Integer methods are supported and an unmodelled method is now opaque, so the
+    // refusal must be tested with something genuinely outside the subset. `?` is the
+    // right choice: it is refused deliberately, because treating it as opaque would
+    // ignore its early-return path and could prove a postcondition the error branch
+    // violates.
+    let err = check_source("#[post(term >= 1)]\nfn f(a: Result<i64, i64>) -> i64 { a? }\n")
+        .expect_err("`?` has no translation");
     let text = format!("{err}");
     assert!(
-        text.contains("a method call"),
+        text.contains("`?`"),
         "expected a construct name: {text}"
     );
     assert!(
