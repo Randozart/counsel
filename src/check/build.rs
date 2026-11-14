@@ -95,6 +95,33 @@ fn domain_fact(name: &str, width: &str) -> Option<Expr> {
     })
 }
 
+/// Flatten a field read `owner.field` into the symbol `owner$field`.
+///
+/// Both parts must be a plain identifier: a nested base (`a.b.c`, `f(x).y`) or an
+/// indexed member is outside this slice and refused, because flattening would then be
+/// guessing at a shape Rust has not told us about.
+fn field_read(field: &syn::ExprField) -> Result<Expr, Error> {
+    let owner = match field.base.as_ref() {
+        syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.to_string()).ok_or_else(
+            || Error::Unsupported("field of a path expression is not supported".to_string()),
+        )?,
+        _ => {
+            return Err(Error::Unsupported(
+                "field access on a nested expression is not supported".to_string(),
+            ))
+        }
+    };
+    let member = match &field.member {
+        syn::Member::Named(ident) => ident.to_string(),
+        _ => {
+            return Err(Error::Unsupported(
+                "indexed member access is not supported".to_string(),
+            ))
+        }
+    };
+    Ok(Expr::Name(format!("{owner}${member}")))
+}
+
 /// Name the construct that fell outside the subset, so the error says what to
 /// change instead of dumping a syntax tree.
 fn describe(expr: &syn::Expr) -> String {
@@ -217,6 +244,12 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
         }
         // Briev has no paren node, so parentheses are transparent here too.
         syn::Expr::Paren(paren) => expr(&paren.expr, allow_ident),
+        // A field read `owner.field` is type-correct by construction (Rust only admits
+        // field access on a struct), so it becomes the symbol `owner$field`. This is an
+        // over-approximation in one direction only: the field is independent of the
+        // owner and of every other field, and no fact connects them, so it can never be
+        // a false proof.
+        syn::Expr::Field(field) => field_read(field),
         other => Err(Error::Unsupported(format!(
             "unsupported expression (pure-integer subset): {}",
             describe(other)
@@ -428,17 +461,29 @@ fn expr_statement(
         }
         syn::Expr::ForLoop(for_loop) => unroll_loop(for_loop, out),
         syn::Expr::Assign(assign) => {
-            let syn::Expr::Path(path) = assign.left.as_ref() else {
+            let name = match assign.left.as_ref() {
+                syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.to_string()),
+                // A field write `owner.field = e` targets the flattened symbol, the same
+                // one a later read resolves to.
+                syn::Expr::Field(field) => {
+                    let owner = match field.base.as_ref() {
+                        syn::Expr::Path(path) => path.path.get_ident().map(|i| i.to_string()),
+                        _ => None,
+                    };
+                    match (owner, &field.member) {
+                        (Some(owner), syn::Member::Named(member)) => {
+                            Some(format!("{owner}${member}"))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let Some(name) = name else {
                 return Err(Error::Unsupported(
-                    "assignment target must be a plain name".to_string(),
+                    "assignment target must be a plain name or field".to_string(),
                 ));
             };
-            let Some(target) = path.path.get_ident() else {
-                return Err(Error::Unsupported(
-                    "assignment target must be a plain name".to_string(),
-                ));
-            };
-            let name = target.to_string();
             if let syn::Expr::MethodCall(call) = assign.right.as_ref() {
                 let method = integer_method(call).ok_or_else(|| {
                     Error::Unsupported(format!(

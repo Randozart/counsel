@@ -424,6 +424,25 @@ mod tests {
         );
     }
 
+    /// L1: a field write followed by a read resolves to the same flattened symbol.
+    #[test]
+    fn a_field_write_then_read_resolves() {
+        assert_eq!(
+            verdicts("#[post(term == 5)]\nfn f(mut s: S) -> i64 { s.x = 5; s.x }\n"),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// L1: a precondition about a field is a fact about its flattened symbol, so a
+    /// contract can drive a proof through a field read.
+    #[test]
+    fn a_contract_over_a_field_discharges() {
+        assert_eq!(
+            verdicts("#[pre(s.x >= 0)]\n#[post(term >= 0)]\nfn g(s: S) -> i64 { s.x + 1 }\n"),
+            vec![("g".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
