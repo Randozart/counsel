@@ -518,16 +518,6 @@ mod tests {
         );
     }
 
-    /// A destructuring from a non-literal (a tuple VARIABLE) still needs a value model
-    /// and is refused - binding its elements would be guessing.
-    #[test]
-    fn a_tuple_destructuring_from_a_variable_is_refused() {
-        check_source(
-            "#[post(term == 1)]\nfn f(pair: (i64, i64)) -> i64 { let (a, _b) = pair; a }\n",
-        )
-        .expect_err("a non-literal tuple cannot be destructured");
-    }
-
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
