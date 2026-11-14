@@ -79,11 +79,28 @@ pub struct FnVerdict {
     pub outcome: Outcome,
 }
 
+/// One function that was **not** checked, and why.
+///
+/// A skip is not a verdict: it records that nothing was proved. Without it a file
+/// full of unannotated functions is indistinguishable from a file that passed, and
+/// no census over a real codebase is possible — see
+/// `docs/plans/2026-11-14-counsel-stress-test.md` (gap G0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skip {
+    /// The Rust function name.
+    pub name: String,
+    /// Why it was not checked, in words.
+    pub reason: String,
+}
+
 /// Verdicts for one source file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// One entry per contracted function, in source order.
     pub verdicts: Vec<FnVerdict>,
+    /// One entry per function that was not checked, with a named reason.
+    /// An empty `skips` plus empty `verdicts` means the file had no functions.
+    pub skips: Vec<Skip>,
     /// Advisory messages: functions skipped because they fall outside the
     /// subset. A warning never means "verified" — it means nothing was proved.
     pub warnings: Vec<String>,
@@ -146,6 +163,7 @@ mod tests {
     fn report_helpers_split_outcomes() {
         let report = Report {
             warnings: Vec::new(),
+            skips: Vec::new(),
             verdicts: vec![
                 FnVerdict {
                     name: "a".into(),
@@ -222,9 +240,9 @@ mod tests {
         assert_eq!(report.verdicts.len(), 1, "{:?}", report.verdicts);
         assert_eq!(report.verdicts[0].name, "good");
         assert!(
-            report.warnings.iter().any(|w| w.contains("skipped")),
-            "the skip must be reported, not silent: {:?}",
-            report.warnings
+            report.skips.iter().any(|s| s.name == "bad"),
+            "the rejected function must be a typed skip, not a silent drop; skips: {:?}",
+            report.skips
         );
     }
 }

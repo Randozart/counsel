@@ -8,7 +8,7 @@
 use super::build;
 use super::prover;
 use super::prover::ast::Defn;
-use super::{Error, FnVerdict, Outcome, Report};
+use super::{Error, FnVerdict, Outcome, Report, Skip};
 
 /// Whether a report entry names `name` — `"f: reason"` or a bare `"f"`.
 fn mentions(entry: &str, name: &str) -> bool {
@@ -42,6 +42,63 @@ fn outcome_of(name: &str, report: &prover::Report) -> Outcome {
     Outcome::Unproven
 }
 
+/// Every function in a file, including methods inside `impl` blocks and
+/// functions inside inline modules.
+///
+/// `file.items` alone yields only top-level free functions, which understates a
+/// real Rust codebase by more than half — most of brievc's logic is methods. A
+/// census that silently omits them is worse than no census, because its number
+/// looks authoritative. Re-exports (`mod x;`) are not followed: they are a
+/// different file, and each file is checked on its own.
+fn collect_functions(items: &[syn::Item], out: &mut Vec<(String, syn::ItemFn)>) {
+    for item in items {
+        match item {
+            syn::Item::Fn(item_fn) => {
+                out.push((item_fn.sig.ident.to_string(), item_fn.clone()));
+            }
+            syn::Item::Impl(item_impl) => {
+                let owner = type_name(&item_impl.self_ty);
+                for entry in &item_impl.items {
+                    if let syn::ImplItem::Fn(item_fn) = entry {
+                        let name = match &owner {
+                            Some(owner) => format!("{owner}::{}", item_fn.sig.ident),
+                            None => item_fn.sig.ident.to_string(),
+                        };
+                        // `ImplItemFn` and `ItemFn` are distinct types with no
+                        // conversion in syn; the builder consumes the free-function
+                        // form, so rebuild it from the same parts (`defaultness`
+                        // does not exist on a free function).
+                        let free = syn::ItemFn {
+                            attrs: item_fn.attrs.clone(),
+                            vis: item_fn.vis.clone(),
+                            sig: item_fn.sig.clone(),
+                            block: Box::new(item_fn.block.clone()),
+                        };
+                        out.push((name, free));
+                    }
+                }
+            }
+            syn::Item::Mod(module) => {
+                if let Some((_, inner)) = &module.content {
+                    collect_functions(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The bare type name of an `impl` block's self type, when it is a plain path.
+fn type_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
 /// Verify the contracted functions in a Rust source string, in-process.
 ///
 /// Functions carrying neither `#[pre]` nor `#[post]` are skipped: only written
@@ -52,23 +109,34 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     // each is built independently and a rejection becomes a warning. A file whose
     // functions all fail still errors rather than reporting an empty pass.
     let mut items = Vec::new();
+    let mut skips: Vec<Skip> = Vec::new();
     let mut warnings = Vec::new();
     let mut first_error: Option<Error> = None;
     let mut contracted = 0usize;
     // Calls are resolved on the `syn` tree first, so the builder only ever sees
     // value expressions. Summaries are computed once for the whole file.
     let sums = build::build_summaries(&file.items);
-    for item in &file.items {
-        let syn::Item::Fn(item_fn) = item else {
-            continue;
-        };
+    let mut candidates: Vec<(String, syn::ItemFn)> = Vec::new();
+    collect_functions(&file.items, &mut candidates);
+    for (name, item_fn) in &candidates {
         if !build::has_contract(item_fn) {
+            // Enumerate it anyway: an unannotated function is neither verified nor
+            // unknown, it was never an obligation. Reporting the skip is what makes
+            // a census over a real codebase possible at all.
+            skips.push(Skip {
+                name: name.clone(),
+                reason: "no contract".to_string(),
+            });
             continue;
         }
         contracted += 1;
         let inlined = match build::inline_calls(item_fn, &sums) {
             Ok(inlined) => inlined,
             Err(reason) => {
+                skips.push(Skip {
+                    name: name.clone(),
+                    reason: reason.to_string(),
+                });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {
                     first_error = Some(reason);
@@ -79,6 +147,10 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
         match build::definition_for(&inlined) {
             Ok(found) => items.extend(found),
             Err(reason) => {
+                skips.push(Skip {
+                    name: name.clone(),
+                    reason: reason.to_string(),
+                });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {
                     first_error = Some(reason);
@@ -92,7 +164,14 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
         )));
     }
     if items.is_empty() {
-        return Ok(Report::default());
+        // No contracted function survived, but the skips are the answer to
+        // "how much of this tree would you accept?" — returning a default report
+        // here would throw the census away and report a clean-looking file.
+        return Ok(Report {
+            verdicts: Vec::new(),
+            skips,
+            warnings,
+        });
     }
     let report = prover::verify(&items);
     let verdicts = items
@@ -108,7 +187,11 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             }
         })
         .collect();
-    Ok(Report { verdicts, warnings })
+    Ok(Report {
+        verdicts,
+        skips,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -123,6 +206,27 @@ mod tests {
             .into_iter()
             .map(|v| (v.name, v.outcome))
             .collect()
+    }
+
+    /// Methods inside `impl` blocks and functions inside inline modules are
+    /// enumerated too. Without this a census of a real Rust codebase undercounts
+    /// by more than half, and the number it prints looks authoritative.
+    #[test]
+    fn enumerates_methods_and_inline_modules() {
+        let report = check_source(
+            "struct S;\nimpl S { fn method(&self) -> i64 { 1 } }\n\
+             mod inner { fn nested() -> i64 { 2 } }\n",
+        )
+        .expect("the census must not fail on plain items");
+        let names: Vec<&str> = report.skips.iter().map(|skip| skip.name.as_str()).collect();
+        assert!(
+            names.contains(&"S::method"),
+            "methods must be enumerated, with their owner: {names:?}"
+        );
+        assert!(
+            names.contains(&"nested"),
+            "functions in inline modules must be enumerated: {names:?}"
+        );
     }
 
     /// A true identity is discharged with no compiler, no text and no process.

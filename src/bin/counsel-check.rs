@@ -126,6 +126,15 @@ fn print_human(reports: &[(PathBuf, Report)]) {
         for warning in &report.warnings {
             eprintln!("warning: {warning}");
         }
+        // One file: show every skip. A whole tree: a count, because a census of
+        // 12k functions would otherwise be unreadable — use --format json for detail.
+        if !multiple {
+            for skip in &report.skips {
+                eprintln!("not checked: {}: {}", skip.name, skip.reason);
+            }
+        } else if !report.skips.is_empty() {
+            println!("  {} not checked", report.skips.len());
+        }
         for verdict in &report.verdicts {
             if verdict.outcome == Outcome::ProvenForCase {
                 cases += 1;
@@ -160,6 +169,14 @@ fn print_json(reports: &[(PathBuf, Report)]) {
                 "path": path.display().to_string(),
                 "warnings": report.warnings,
                 "verdicts": verdicts,
+                "skips": report
+                    .skips
+                    .iter()
+                    .map(|skip| serde_json::json!({
+                        "name": skip.name,
+                        "reason": skip.reason,
+                    }))
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();
