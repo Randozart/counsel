@@ -1165,6 +1165,13 @@ impl Inliner<'_> {
 impl syn::visit_mut::VisitMut for Inliner<'_> {
     /// Rewrite one expression node, recursing first so nested calls resolve.
     fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        // Lower a literal `match` into `if`/`else` before recursing, so the arms are
+        // visited by the rest of this pass like any other expression.
+        if let syn::Expr::Match(node_match) = node {
+            if let Some(lowered) = lower_match(node_match) {
+                *node = lowered;
+            }
+        }
         syn::visit_mut::visit_expr_mut(self, node);
         if self.failure.is_some() {
             return;
@@ -1239,6 +1246,58 @@ fn direct_name(func: &syn::Expr) -> Option<String> {
         return None;
     };
     path.path.get_ident().map(|ident| ident.to_string())
+}
+
+/// Lower `match x { 1 => a, _ => b }` into `if x == 1 { a } else { b }`.
+///
+/// Only the part of `match` that needs no type information is lowered: literal
+/// patterns (integers and booleans) plus a final wildcard arm. Everything else —
+/// enum variants, ranges, bindings, guards, or-patterns — returns `None` and the
+/// function is skipped, which is the honest answer until tagged unions exist (L2b).
+///
+/// Two restrictions keep the rewrite sound:
+///
+/// 1. The **scrutinee is duplicated** once per comparison, so it must be a place or
+///    a literal. Lowering `match next() { .. }` would evaluate the call several times.
+/// 2. A **catch-all arm is required**. Without one the lowered chain would silently
+///    become `... else { <last arm> }`, changing behaviour for unmatched values.
+fn lower_match(node: &syn::ExprMatch) -> Option<syn::Expr> {
+    let scrutinee = match node.expr.as_ref() {
+        syn::Expr::Path(_) | syn::Expr::Lit(_) => node.expr.as_ref().clone(),
+        _ => return None,
+    };
+    let (last, leading) = node.arms.split_last()?;
+    if last.guard.is_some() {
+        return None;
+    }
+    let mut lowered = match &last.pat {
+        syn::Pat::Wild(_) => last.body.as_ref().clone(),
+        _ => return None,
+    };
+    for arm in leading.iter().rev() {
+        if arm.guard.is_some() {
+            return None;
+        }
+        let value = literal_pattern(&arm.pat)?;
+        let body = arm.body.as_ref().clone();
+        let condition: syn::Expr = syn::parse_quote!(#scrutinee == #value);
+        lowered = syn::parse_quote!(if #condition { #body } else { #lowered });
+    }
+    Some(lowered)
+}
+
+/// The literal a pattern matches, when it is an integer or boolean literal.
+fn literal_pattern(pat: &syn::Pat) -> Option<syn::Expr> {
+    let syn::Pat::Lit(literal) = pat else {
+        return None;
+    };
+    match &literal.lit {
+        syn::Lit::Int(_) | syn::Lit::Bool(_) => Some(syn::Expr::Lit(syn::ExprLit {
+            attrs: Vec::new(),
+            lit: literal.lit.clone(),
+        })),
+        _ => None,
+    }
 }
 
 /// Replaces the callee's parameters with the caller's arguments.

@@ -326,6 +326,40 @@ mod tests {
         );
     }
 
+    /// A literal `match` is lowered to if/else, so it needs no new prover machinery.
+    #[test]
+    fn a_literal_match_is_lowered() {
+        assert_eq!(
+            verdicts(
+                "#[pre(x == 2)]\n#[post(term == 2)]\nfn f(x: i64) -> i64 { match x { 2 => 2, _ => 0 } }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// The scrutinee is duplicated per comparison, so a call there must be refused
+    /// rather than silently evaluated several times.
+    #[test]
+    fn a_match_on_a_call_is_refused() {
+        let report = check_source(
+            "#[post(term >= 0)]\nfn f(x: i64) -> i64 { match g(x) { 1 => 1, _ => 0 } }\n",
+        )
+        .expect_err("a duplicated scrutinee must be refused");
+        assert!(
+            report.to_string().contains("subset"),
+            "the refusal must name the subset: {report}"
+        );
+    }
+
+    /// A `match` with no catch-all arm must not be lowered: it would silently change
+    /// behaviour for unmatched values.
+    #[test]
+    fn a_match_without_a_catch_all_is_refused() {
+        let err = check_source("#[post(term == 0)]\nfn f(x: i64) -> i64 { match x { 1 => 1 } }\n")
+            .expect_err("a non-exhaustive match must be refused");
+        assert!(err.to_string().contains("match"), "{err}");
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
