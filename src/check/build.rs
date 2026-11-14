@@ -1106,6 +1106,7 @@ pub fn inline_calls(
         sums,
         stack: Vec::new(),
         failure: None,
+        opaque: 0,
     };
     syn::visit_mut::VisitMut::visit_item_fn_mut(&mut inliner, &mut inlined);
     match inliner.failure {
@@ -1119,6 +1120,8 @@ struct Inliner<'a> {
     sums: &'a std::collections::HashMap<String, Summary>,
     stack: Vec<String>,
     failure: Option<Error>,
+    /// How many opaque values have been minted for this function (L2a).
+    opaque: usize,
 }
 
 impl syn::visit_mut::VisitMut for Inliner<'_> {
@@ -1130,9 +1133,31 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
         }
         let syn::Expr::Call(call) = node else { return };
         let Some(name) = direct_name(&call.func) else {
-            self.failure = Some(Error::Unsupported(
-                "call through a non-name target is not supported".to_string(),
-            ));
+            // L2a — an unmodelled computation (a variant constructor, `Ty::mk(x)`, an
+            // associated function) becomes an OPAQUE value instead of blocking the
+            // whole function.
+            //
+            // Each *occurrence* gets its own symbol, deliberately. Reusing one symbol
+            // for identical call text would assume the callee is pure and
+            // deterministic, and `let a = counter::next(); let b = counter::next();`
+            // would then "prove" `a == b` — a false proof. The cost of occurrence
+            // distinctness is that `Ty::V(x) == Ty::V(x)` is unprovable, which is the
+            // sound direction to lose.
+            //
+            // The arguments are dropped rather than modelled: the value is treated as
+            // an arbitrary integer, so no fact about it can be wrong.
+            let fresh = format!("__uf{}", self.opaque);
+            match syn::parse_str::<syn::Expr>(&fresh) {
+                Ok(replacement) => {
+                    self.opaque += 1;
+                    *node = replacement;
+                }
+                Err(_) => {
+                    self.failure = Some(Error::Unsupported(
+                        "call through a non-name target is not supported".to_string(),
+                    ));
+                }
+            }
             return;
         };
         let Some(summary) = self.sums.get(&name) else {

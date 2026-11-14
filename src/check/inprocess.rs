@@ -255,6 +255,29 @@ mod tests {
         );
     }
 
+    /// L2a: an unmodelled computation becomes an opaque value instead of blocking the
+    /// function, so the rest of the body still checks.
+    #[test]
+    fn a_constructor_does_not_block_translation() {
+        assert_eq!(
+            verdicts("#[post(term == 0)]\nfn f(x: i64) -> i64 { let e = W::V(x); 0 }\n"),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// Two occurrences are two distinct unknowns. Sharing one symbol would assume the
+    /// callee is pure, and a side-effecting callee could then be "proven"
+    /// deterministic - a false proof. `a - b == 0` must stay unproven.
+    #[test]
+    fn two_constructor_occurrences_are_not_assumed_equal() {
+        assert_eq!(
+            verdicts(
+                "#[post(term == 0)]\nfn f(x: i64) -> i64 { let a = W::V(x); let b = W::V(x); a - b }\n"
+            ),
+            vec![("f".to_string(), Outcome::Unproven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
