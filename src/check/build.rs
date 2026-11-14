@@ -58,6 +58,11 @@ fn width_of(ty: &syn::Type) -> Option<&'static str> {
         "u32" => "u32",
         "u64" => "u64",
         "usize" => "usize",
+        // 2026-11-14: a `bool` is an integer in this model, exactly as its literals
+        // (1/0) and its comparisons are. Accepting the *literal* while rejecting the
+        // *type* was incoherent, and it blocked functions whose only non-integer part
+        // was a boolean result — including every predicate in the census.
+        "bool" => "i64",
         _ => return None,
     })
 }

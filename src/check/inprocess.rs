@@ -244,6 +244,17 @@ mod tests {
         );
     }
 
+    /// A `bool` return is admitted like a `bool` literal: both are 0/1 here.
+    #[test]
+    fn a_boolean_return_type_is_admitted() {
+        let report = check_source("fn positive(a: i64) -> bool { a > 0 }\n").expect("census");
+        assert_eq!(report.skips.len(), 1, "one function");
+        assert_eq!(
+            report.skips[0].body, None,
+            "a bool-returning body must be inside the subset"
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
