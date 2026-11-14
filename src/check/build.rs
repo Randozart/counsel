@@ -1551,6 +1551,7 @@ fn lower_match(node: &syn::ExprMatch, table: &TypeTable) -> Option<syn::Expr> {
         },
         _ => return None,
     };
+    let construction = scrutinee_construction(&scrutinee, table);
     let (last, leading) = node.arms.split_last()?;
     if last.guard.is_some() {
         return None;
@@ -1564,11 +1565,98 @@ fn lower_match(node: &syn::ExprMatch, table: &TypeTable) -> Option<syn::Expr> {
             return None;
         }
         let value = pattern_value(&arm.pat, table)?;
-        let body = arm.body.as_ref().clone();
+        let mut body = arm.body.as_ref().clone();
+        // P1: a construction scrutinee `E::V(x)` hands its payload to the arm naming the
+        // same variant, so `match E::V(x) { E::V(inner) => inner, .. }` is provable.
+        if let Some(replacement) = payload_bindings(&arm.pat, &construction) {
+            let mut subst = BindSubst { map: replacement };
+            syn::visit_mut::VisitMut::visit_expr_mut(&mut subst, &mut body);
+        }
         let condition: syn::Expr = syn::parse_quote!(#scrutinee == #value);
         lowered = syn::parse_quote!(if #condition { #body } else { #lowered });
     }
     Some(lowered)
+}
+
+/// The payload args and variant of a construction scrutinee, or `None`.
+fn scrutinee_construction(
+    scrutinee: &syn::Expr,
+    table: &TypeTable,
+) -> Option<(String, Vec<syn::Expr>)> {
+    let syn::Expr::Call(call) = scrutinee else {
+        return None;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    // Only trust the shape once it resolves to a known variant, not a function.
+    path_variant_tag(&path.path, table)?;
+    Some((
+        path.path.segments.last()?.ident.to_string(),
+        call.args.iter().cloned().collect(),
+    ))
+}
+
+/// The idents a tuple-struct pattern binds in order; `_` elements are `None`.
+fn pattern_bindings(pat: &syn::Pat) -> Option<Vec<Option<String>>> {
+    let syn::Pat::TupleStruct(ts) = pat else {
+        return None;
+    };
+    let mut out = Vec::with_capacity(ts.elems.len());
+    for field in &ts.elems {
+        match field {
+            syn::Pat::Ident(id) if id.by_ref.is_none() && id.subpat.is_none() => {
+                out.push(Some(id.ident.to_string()));
+            }
+            syn::Pat::Wild(_) => out.push(None),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Substitute a constructed scrutinee's payload into an arm naming the same variant.
+fn payload_bindings(
+    pat: &syn::Pat,
+    construction: &Option<(String, Vec<syn::Expr>)>,
+) -> Option<std::collections::HashMap<String, syn::Expr>> {
+    let (variant, args) = construction.as_ref()?;
+    let syn::Pat::TupleStruct(ts) = pat else {
+        return None;
+    };
+    if ts.path.segments.last()?.ident.to_string() != *variant {
+        return None;
+    }
+    let bindings = pattern_bindings(pat)?;
+    if bindings.len() != args.len() {
+        return None;
+    }
+    let mut map = std::collections::HashMap::new();
+    for (binding, value) in bindings.iter().zip(args.iter()) {
+        if let Some(name) = binding {
+            map.insert(name.clone(), value.clone());
+        }
+    }
+    Some(map)
+}
+
+/// Replace bound idents with their payload expressions in an arm body.
+struct BindSubst {
+    map: std::collections::HashMap<String, syn::Expr>,
+}
+
+impl syn::visit_mut::VisitMut for BindSubst {
+    fn visit_expr_mut(&mut self, node: &mut syn::Expr) {
+        if let syn::Expr::Path(path) = node {
+            if let Some(ident) = path.path.get_ident() {
+                if let Some(replacement) = self.map.get(&ident.to_string()) {
+                    *node = replacement.clone();
+                    return;
+                }
+            }
+        }
+        syn::visit_mut::visit_expr_mut(self, node);
+    }
 }
 
 /// The comparison constant a pattern names: a literal, or the tag of a same-file variant.

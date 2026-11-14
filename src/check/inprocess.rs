@@ -518,6 +518,28 @@ mod tests {
         );
     }
 
+    /// P1: a construction scrutinee hands its payload to the same-variant arm, so the
+    /// matched value is recovered exactly.
+    #[test]
+    fn a_constructed_payload_is_recovered_by_its_variant_arm() {
+        assert_eq!(
+            verdicts(
+                "enum E { V(i64), W }\n#[pre(x == 5)]\n#[post(term == 5)]\n\
+                 fn f(x: i64) -> i64 { match E::V(x) { E::V(inner) => inner, _ => 0 } }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+        // A wrong post is falsified: the payload is 5, so claiming 6 is a real
+        // contradiction Counsel must catch, not wave through.
+        assert_eq!(
+            verdicts(
+                "enum E { V(i64), W }\n#[pre(x == 5)]\n#[post(term == 6)]\n\
+                 fn g(x: i64) -> i64 { match E::V(x) { E::V(inner) => inner, _ => 0 } }\n"
+            ),
+            vec![("g".to_string(), Outcome::Violated)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
