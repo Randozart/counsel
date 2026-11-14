@@ -567,6 +567,34 @@ mod tests {
         );
     }
 
+    /// P4 (interprocedural, within-file): a caller relies on a pure callee's body
+    /// summary, so cross-function arithmetic discharges.
+    #[test]
+    fn a_caller_relies_on_a_pure_callees_summary() {
+        assert_eq!(
+            verdicts(
+                "#[post(term == n + 1)]\nfn g(n: i64) -> i64 { n + 1 }\n\
+                 #[post(term == x + 2)]\nfn f(x: i64) -> i64 { g(x) + 1 }\n"
+            ),
+            vec![
+                ("g".to_string(), Outcome::Proven),
+                ("f".to_string(), Outcome::Proven),
+            ]
+        );
+    }
+
+    /// P5 (string length, seeded by P2): a `String` parameter's `.len()` is a length
+    /// fact usable in a contract; equality stays opaque (contents are unmodelled).
+    #[test]
+    fn a_string_length_is_usable_in_a_contract() {
+        assert_eq!(
+            verdicts(
+                "#[pre(s.len() == 4)]\n#[post(term == 4)]\nfn h(s: String) -> usize { s.len() }\n"
+            ),
+            vec![("h".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
