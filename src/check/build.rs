@@ -228,6 +228,30 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
             }
             Ok(ident(&segment.ident.to_string()))
         }
+        // `.len()` on a path receiver is the length symbol `len_<receiver>`. For a
+        // collection parameter this is a pinned `>= 0` fact; for any other path it is an
+        // unbound name the prover treats as a free variable — soundly unproven, never a
+        // false `Proven`. Resolving here (not only in the inliner) is what makes
+        // `.len()` usable inside `#[pre]`/`#[post]`, which the inliner never visits.
+        syn::Expr::MethodCall(method) => {
+            if method.method.to_string() != "len" {
+                return Err(Error::Unsupported(format!(
+                    "unsupported expression (pure-integer subset): {}",
+                    describe(node)
+                )));
+            }
+            match method.receiver.as_ref() {
+                syn::Expr::Path(path) => match path.path.get_ident() {
+                    Some(ident) => Ok(Expr::Name(format!("len_{ident}"))),
+                    None => Err(Error::Unsupported(
+                        "`len` on a path expression is not supported".to_string(),
+                    )),
+                },
+                _ => Err(Error::Unsupported(
+                    "`len` on a non-path receiver is not supported".to_string(),
+                )),
+            }
+        }
         syn::Expr::Binary(bin) => {
             let kind = binary_kind(&bin.op).ok_or_else(|| {
                 Error::Unsupported(format!("unsupported binary operator: {:?}", bin.op))
@@ -1259,7 +1283,11 @@ fn is_collection(ty: &syn::Type) -> bool {
             other => is_collection(other),
         },
         syn::Type::Path(path) => {
-            let last = path.path.segments.last().map(|segment| segment.ident.to_string());
+            let last = path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string());
             matches!(
                 last.as_deref(),
                 Some("Vec" | "String" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet")
@@ -1423,6 +1451,23 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
                 ));
             }
             return;
+        }
+        // P3: `v[i]` on a collection-typed name is an opaque ELEMENT. Sound: an element
+        // of an unmodelled collection is unconstrained. This admits reading a collection
+        // (so the surrounding integer logic translates and proves) without claiming
+        // anything about the element.
+        if let syn::Expr::Index(index) = node {
+            if let syn::Expr::Path(path) = index.expr.as_ref() {
+                let is_collection = path
+                    .path
+                    .get_ident()
+                    .map(|id| self.collections.contains(&id.to_string()))
+                    .unwrap_or(false);
+                if is_collection {
+                    let _ = self.mint_opaque(node);
+                    return;
+                }
+            }
         }
         let syn::Expr::Call(call) = node else { return };
         let Some(name) = direct_name(&call.func) else {

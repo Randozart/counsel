@@ -554,6 +554,19 @@ mod tests {
         );
     }
 
+    /// P3: indexing a collection param is an opaque element (admitted, not reasoned),
+    /// so it can be bound and the surrounding length logic still proves.
+    #[test]
+    fn a_collection_index_is_an_opaque_element() {
+        assert_eq!(
+            verdicts(
+                "#[pre(v.len() == 3)]\n#[post(term == 3)]\n\
+                 fn f(v: Vec<i64>) -> i64 { let e = v[0]; e - e + v.len() }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
