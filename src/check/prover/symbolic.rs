@@ -229,22 +229,222 @@ fn tighten(name: &str, op: BinOp, value: i64, bounds: &mut HashMap<String, Bound
 }
 
 /// Decide an interval comparison without the solver.
+/// Bounds of an arbitrary expression, given the bounds of its variables.
+///
+/// Every rule is conservative in one direction only: when a bound cannot be computed
+/// exactly it is **dropped**, never approximated in the unhelpful direction. A wrong
+/// bound here would be a false proof, which is the one failure this prover must not
+/// have. Overflow, division by a non-positive constant, and unknown signs all resolve
+/// to `None`.
+pub fn expr_bounds(expr: &Expr, bounds: &HashMap<String, Bounds>) -> Bounds {
+    match expr {
+        Expr::Int(value) => Bounds {
+            low: Some(*value),
+            high: Some(*value),
+        },
+        Expr::Bool(value) => {
+            let truth = i64::from(*value);
+            Bounds {
+                low: Some(truth),
+                high: Some(truth),
+            }
+        }
+        Expr::Name(name) => bounds.get(name).copied().unwrap_or_default(),
+        Expr::Unary(UnOp::Neg, inner) => {
+            let inner = expr_bounds(inner, bounds);
+            // `-a` is only trustworthy when the source range excludes `i64::MIN`:
+            // negating the minimum wraps back to a negative value, so an unbounded
+            // below operand must yield no bound at all. A known lower bound above
+            // `i64::MIN` is exactly the proof that it is safe.
+            match inner.low {
+                Some(low) if low > i64::MIN => Bounds {
+                    low: inner.high.and_then(i64::checked_neg),
+                    high: Some(-low),
+                },
+                _ => Bounds::default(),
+            }
+        }
+        // `!x` is `x == 0` as an integer, so it is always a truth value.
+        Expr::Unary(UnOp::Not, _) => Bounds {
+            low: Some(0),
+            high: Some(1),
+        },
+        Expr::Binary(op, left, right) => {
+            let left = expr_bounds(left, bounds);
+            let right = expr_bounds(right, bounds);
+            operator_bounds(*op, left, right)
+        }
+    }
+}
+
+/// Interval arithmetic for one operator, or empty bounds when it cannot be trusted.
+fn operator_bounds(op: BinOp, left: Bounds, right: Bounds) -> Bounds {
+    match op {
+        BinOp::Add => Bounds {
+            low: addition(left.low, right.low),
+            high: addition(left.high, right.high),
+        },
+        BinOp::Sub => Bounds {
+            low: left.low.zip(right.high).and_then(|(a, b)| a.checked_sub(b)),
+            high: left.high.zip(right.low).and_then(|(a, b)| a.checked_sub(b)),
+        },
+        BinOp::Mul => product_bounds(left, right),
+        BinOp::Div => quotient_bounds(left, right),
+        BinOp::Rem => remainder_bounds(left, right),
+        // Every comparison and logical operator yields a truth value.
+        _ => Bounds {
+            low: Some(0),
+            high: Some(1),
+        },
+    }
+}
+
+/// Sum of two optional bounds, dropped on overflow.
+fn addition(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    left.zip(right).and_then(|(a, b)| a.checked_add(b))
+}
+
+/// Product bounds, with a sign rule so a non-negative product is known even when one
+/// operand's upper end is unbounded (`[0, ∞) * 16` is still `[0, ∞)`).
+fn product_bounds(left: Bounds, right: Bounds) -> Bounds {
+    if let (Some(low_left), Some(low_right)) = (left.low, right.low) {
+        if low_left >= 0 && low_right >= 0 {
+            return Bounds {
+                low: low_left.checked_mul(low_right),
+                high: None,
+            };
+        }
+    }
+    let (Some(a), Some(b), Some(c), Some(d)) = (left.low, left.high, right.low, right.high) else {
+        return Bounds::default();
+    };
+    let mut low = i64::MAX;
+    let mut high = i64::MIN;
+    for (x, y) in [(a, c), (a, d), (b, c), (b, d)] {
+        // Checked, not wrapping: a wrapped bound would be a wrong bound, and a wrong
+        // bound is a false proof.
+        let Some(product) = x.checked_mul(y) else {
+            return Bounds::default();
+        };
+        low = low.min(product);
+        high = high.max(product);
+    }
+    Bounds {
+        low: Some(low),
+        high: Some(high),
+    }
+}
+
+/// Quotient bounds for a positive constant divisor and a non-negative numerator.
+///
+/// Truncation toward zero is exact in that quadrant, which is the only case handled;
+/// everything else is dropped rather than guessed.
+fn quotient_bounds(left: Bounds, right: Bounds) -> Bounds {
+    let (Some(divisor), Some(low)) = (right.low, left.low) else {
+        return Bounds::default();
+    };
+    if divisor <= 0 || right.high != right.low || low < 0 {
+        return Bounds::default();
+    }
+    Bounds {
+        low: Some(low / divisor),
+        high: left.high.map(|high| high / divisor),
+    }
+}
+
+/// Remainder bounds: for a positive constant divisor and a non-negative numerator the
+/// result lies in `[0, divisor - 1]` whatever the numerator is.
+fn remainder_bounds(left: Bounds, right: Bounds) -> Bounds {
+    let (Some(divisor), Some(low)) = (right.low, left.low) else {
+        return Bounds::default();
+    };
+    if divisor <= 0 || right.high != right.low || low < 0 {
+        return Bounds::default();
+    }
+    Bounds {
+        low: Some(0),
+        high: Some(divisor - 1),
+    }
+}
+
+/// Decide a comparison from operand intervals, or `None` when they overlap.
 pub fn decide_by_bounds(goal: &Expr, bounds: &HashMap<String, Bounds>) -> Option<bool> {
     let Expr::Binary(op, left, right) = goal else {
         return None;
     };
-    let (Expr::Name(name), Expr::Int(value)) = (left.as_ref(), right.as_ref()) else {
-        return None;
-    };
-    let bound = bounds.get(name)?;
-    Some(match op {
-        BinOp::Ge => bound.low.is_some_and(|low| low >= *value),
-        BinOp::Gt => bound.low.is_some_and(|low| low > *value),
-        BinOp::Le => bound.high.is_some_and(|high| high <= *value),
-        BinOp::Lt => bound.high.is_some_and(|high| high < *value),
-        BinOp::Eq => bound.low == Some(*value) && bound.high == Some(*value),
-        _ => return None,
-    })
+    let left = expr_bounds(left, bounds);
+    let right = expr_bounds(right, bounds);
+    match op {
+        BinOp::Ge => {
+            if left.low? >= right.high? {
+                Some(true)
+            } else if left.high? < right.low? {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BinOp::Gt => {
+            if left.low? > right.high? {
+                Some(true)
+            } else if left.high? <= right.low? {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BinOp::Le => {
+            if left.high? <= right.low? {
+                Some(true)
+            } else if left.low? > right.high? {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BinOp::Lt => {
+            if left.high? < right.low? {
+                Some(true)
+            } else if left.low? >= right.high? {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BinOp::Eq => {
+            // Both sides must be *exactly* known before equality can be decided.
+            // Comparing the `Option`s directly would read `None == None` as "both endpoints
+            // equal" and prove `a * a == a * 2` for unbounded `a` — a false proof, and
+            // one the valve suite caught.
+            if let (Some(low), Some(high), Some(other_low), Some(other_high)) =
+                (left.low, left.high, right.low, right.high)
+            {
+                if low == high && other_low == other_high {
+                    return Some(low == other_low);
+                }
+            }
+            if left.high? < right.low? || right.high? < left.low? {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BinOp::Ne => {
+            if let (Some(low), Some(high), Some(other_low), Some(other_high)) =
+                (left.low, left.high, right.low, right.high)
+            {
+                if low == high && other_low == other_high {
+                    return Some(low != other_low);
+                }
+            }
+            if left.high? < right.low? || right.high? < left.low? {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +492,78 @@ mod tests {
             &state,
         );
         assert!(matches!(value, Value::Sym(_)), "{value:?}");
+    }
+
+    /// An interval is carried through division and multiplication, so a bound on a
+    /// compound expression is decidable — the `align16` shape.
+    #[test]
+    fn bounds_flow_through_division_and_multiplication() {
+        let mut bounds = HashMap::new();
+        bounds.insert(
+            "n".to_string(),
+            Bounds {
+                low: Some(0),
+                high: None,
+            },
+        );
+        let aligned = Expr::binary(
+            BinOp::Mul,
+            Expr::binary(
+                BinOp::Div,
+                Expr::binary(BinOp::Add, Expr::Name("n".into()), Expr::Int(15)),
+                Expr::Int(16),
+            ),
+            Expr::Int(16),
+        );
+        let goal = Expr::binary(BinOp::Ge, aligned, Expr::Int(0));
+        assert_eq!(decide_by_bounds(&goal, &bounds), Some(true));
+    }
+
+    /// A divisor with no known sign yields no bounds rather than a guessed one.
+    #[test]
+    fn division_by_an_unknown_divisor_yields_no_bounds() {
+        let mut bounds = HashMap::new();
+        bounds.insert(
+            "a".to_string(),
+            Bounds {
+                low: Some(0),
+                high: None,
+            },
+        );
+        let quotient = Expr::binary(BinOp::Div, Expr::Name("a".into()), Expr::Name("d".into()));
+        let found = expr_bounds(&quotient, &bounds);
+        assert!(found.low.is_none() && found.high.is_none(), "{found:?}");
+    }
+
+    /// Negating an operand that may be `i64::MIN` yields no bound: the negation wraps
+    /// back to a negative value, which is exactly the false-proof trap.
+    #[test]
+    fn negation_needs_a_bound_above_the_minimum() {
+        let mut bounds = HashMap::new();
+        bounds.insert(
+            "a".to_string(),
+            Bounds {
+                low: None,
+                high: Some(-1),
+            },
+        );
+        let negated = Expr::Unary(UnOp::Neg, Box::new(Expr::Name("a".into())));
+        let found = expr_bounds(&negated, &bounds);
+        assert!(found.low.is_none() && found.high.is_none(), "{found:?}");
+
+        // With a bounded-below operand the negation is exact.
+        let mut known = HashMap::new();
+        known.insert(
+            "b".to_string(),
+            Bounds {
+                low: Some(-5),
+                high: Some(-2),
+            },
+        );
+        let negated = Expr::Unary(UnOp::Neg, Box::new(Expr::Name("b".into())));
+        let found = expr_bounds(&negated, &known);
+        assert_eq!(found.low, Some(2));
+        assert_eq!(found.high, Some(5));
     }
 
     /// A false operand decides a conjunction even when the other side is symbolic.
