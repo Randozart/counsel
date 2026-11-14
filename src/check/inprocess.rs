@@ -492,6 +492,16 @@ mod tests {
         );
     }
 
+    /// A statement macro produces `()` and touches no tracked value, so it is a no-op;
+    /// the surrounding function still checks.
+    #[test]
+    fn a_statement_macro_is_a_noop() {
+        assert_eq!(
+            verdicts("#[post(term == 2)]\nfn f(x: i64) -> i64 { println!(\"x={}\", x); assert!(x >= 0); 2 }\n"),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {

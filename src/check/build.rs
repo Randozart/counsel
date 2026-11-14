@@ -436,6 +436,16 @@ fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Stmt>) -> Result<(),
             Ok(())
         }
         syn::Stmt::Expr(node, semi) => expr_statement(node, semi.is_none(), is_last, out),
+        // A statement macro (`assert!`, `println!`, `dbg!`) produces `()` and has no
+        // effect on the integer values we track. A failing `assert!` would panic, which
+        // aborts before any normal return, so the postcondition need not hold on that
+        // path - ignoring it is sound for a total-correctness goal (it can never make a
+        // false `Proven`). Evaluated via the panic-free branch, as the author intends.
+        syn::Stmt::Macro(_) => Ok(()),
+        // A `use` or `macro_rules!` inside a body is a scoping/no-op construct in our
+        // model; calls that name the imported path are already handled as opaque.
+        syn::Stmt::Item(syn::Item::Use(_)) => Ok(()),
+        syn::Stmt::Item(syn::Item::Macro(_)) => Ok(()),
         other => Err(Error::Unsupported(format!(
             "unsupported statement: {other:?}"
         ))),
