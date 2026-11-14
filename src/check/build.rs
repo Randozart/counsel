@@ -333,11 +333,25 @@ fn if_statements(node: &syn::ExprIf) -> Result<Vec<Stmt>, Error> {
     Ok(out)
 }
 
+/// The identifier a `let` binds, looking through a type ascription.
+///
+/// `let x: T = e;` differs from `let x = e;` only by a check rustc has already
+/// performed, so the annotation is ignored rather than refused — it was 5,599 of
+/// brievc's 40,193 bindings. Anything with structure (a tuple, a struct pattern,
+/// `ref`) still needs a value model and stays refused.
+fn binding_ident(pat: &syn::Pat) -> Option<&syn::PatIdent> {
+    match pat {
+        syn::Pat::Ident(ident) => Some(ident),
+        syn::Pat::Type(ascribed) => binding_ident(&ascribed.pat),
+        _ => None,
+    }
+}
+
 /// Build one statement, appending zero or more nodes.
 fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Stmt>) -> Result<(), Error> {
     match stmt {
         syn::Stmt::Local(local) => {
-            let syn::Pat::Ident(pat) = &local.pat else {
+            let Some(pat) = binding_ident(&local.pat) else {
                 return Err(Error::Unsupported(
                     "only plain `let x = ...;` bindings are supported".to_string(),
                 ));

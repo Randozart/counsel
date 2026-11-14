@@ -360,6 +360,24 @@ mod tests {
         assert!(err.to_string().contains("match"), "{err}");
     }
 
+    /// `let x: T = e;` is the same binding with an annotation rustc already checked.
+    #[test]
+    fn a_type_ascribed_binding_is_admitted() {
+        assert_eq!(
+            verdicts("#[post(term == 2)]\nfn f() -> i64 { let x: i64 = 2; x }\n"),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// A destructuring binding still needs a value model for tuples, so it is refused
+    /// rather than approximated.
+    #[test]
+    fn a_destructuring_binding_is_refused() {
+        let err = check_source("#[post(term == 1)]\nfn f() -> i64 { let (a, _b) = (1, 2); a }\n")
+            .expect_err("tuple destructuring is outside the subset");
+        assert!(err.to_string().contains("plain `let"), "{err}");
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {
