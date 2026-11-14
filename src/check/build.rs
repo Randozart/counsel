@@ -1417,6 +1417,10 @@ fn direct_name(func: &syn::Expr) -> Option<String> {
 pub struct TypeTable {
     /// Enum name -> variant names in declaration order. The index is the tag.
     enums: std::collections::HashMap<String, Vec<String>>,
+    /// Single-segment stdlib constructors -> their tag. `Some` is `Option::Some` and
+    /// `None` is `Option::None`; `Ok`/`Err` are `Result`'s. These are pure, so the tag
+    /// is sound, and their order matches the in-file enum rule (index within the enum).
+    prelude: std::collections::HashMap<&'static str, i64>,
 }
 
 impl TypeTable {
@@ -1428,11 +1432,22 @@ impl TypeTable {
             .position(|name| name == variant)
             .map(|index| index as i64)
     }
+
+    /// The tag of a single-segment stdlib constructor (`Some`, `None`, `Ok`, `Err`).
+    pub fn prelude_variant_tag(&self, name: &str) -> Option<i64> {
+        self.prelude.get(name).copied()
+    }
 }
 
 /// Build the type table from a file's top-level items.
 pub fn type_table(items: &[syn::Item]) -> TypeTable {
     let mut table = TypeTable::default();
+    // The stdlib prelude catalog: a small declared set of constructor tags, as sound
+    // as a contract because enum construction is pure. Order within each enum is the
+    // in-file convention.
+    table
+        .prelude
+        .extend([("Some", 0), ("None", 1), ("Ok", 0), ("Err", 1)]);
     for item in items {
         if let syn::Item::Enum(en) = item {
             table.enums.insert(
@@ -1450,12 +1465,15 @@ pub fn type_table(items: &[syn::Item]) -> TypeTable {
 /// The tag of `Enum::Variant` in a two-segment path expression, when it resolves.
 fn path_variant_tag(path: &syn::Path, table: &TypeTable) -> Option<i64> {
     let segments = &path.segments;
-    if segments.len() != 2 {
-        return None;
+    match segments.len() {
+        2 => {
+            let enum_name = segments[0].ident.to_string();
+            let variant = segments[1].ident.to_string();
+            table.variant_tag(&enum_name, &variant)
+        }
+        1 => table.prelude_variant_tag(&segments[0].ident.to_string()),
+        _ => None,
     }
-    let enum_name = segments[0].ident.to_string();
-    let variant = segments[1].ident.to_string();
-    table.variant_tag(&enum_name, &variant)
 }
 
 /// The tag a pattern names, when the pattern is a same-file enum variant.

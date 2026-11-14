@@ -476,6 +476,22 @@ mod tests {
             .expect_err("a foreign-enum match has no known tags");
     }
 
+    /// D3: the prelude catalog makes `Some`/`None` constructors, so a locally built
+    /// `Option` matches by the same tag rule as a same-file enum.
+    #[test]
+    fn a_match_over_option_constructors_discharges() {
+        assert_eq!(
+            verdicts(
+                "#[post(term == 1)]\nfn f() -> i64 { match Some(5) { Some(_) => 1, _ => 0 } }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+        assert_eq!(
+            verdicts("#[post(term == 0)]\nfn g() -> i64 { match None { Some(_) => 1, _ => 0 } }\n"),
+            vec![("g".to_string(), Outcome::Proven)]
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {

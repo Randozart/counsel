@@ -54,3 +54,15 @@ fn a_struct_name_is_not_a_variant() {
     assert_eq!(table.variant_tag("Rect", "x"), None);
     assert_eq!(table.variant_tag("Rect", "y"), None);
 }
+
+/// The declared prelude catalog (SS18 D3) tags the single-segment stdlib
+/// constructors in their enum's order.
+#[test]
+fn prelude_catalog_tags_stdlib_constructors() {
+    let table = table_of(include_str!("oracle_fixtures/catalog.rs"));
+    assert_eq!(table.prelude_variant_tag("Some"), Some(0));
+    assert_eq!(table.prelude_variant_tag("None"), Some(1));
+    assert_eq!(table.prelude_variant_tag("Ok"), Some(0));
+    assert_eq!(table.prelude_variant_tag("Err"), Some(1));
+    assert_eq!(table.prelude_variant_tag("SomeThingElse"), None);
+}
