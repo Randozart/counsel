@@ -91,6 +91,13 @@ pub struct Skip {
     pub name: String,
     /// Why it was not checked, in words.
     pub reason: String,
+    /// Whether the *body* is inside the subset, probed with a synthetic contract.
+    ///
+    /// `None` means the body translates: the function is one annotation away from
+    /// being checkable. `Some(reason)` means a prover gap blocks it. This is the
+    /// distinction a census turns on, and it has nothing to do with why the
+    /// function was skipped (`reason`).
+    pub body: Option<String>,
 }
 
 /// Verdicts for one source file.

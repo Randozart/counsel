@@ -175,6 +175,7 @@ fn print_json(reports: &[(PathBuf, Report)]) {
                     .map(|skip| serde_json::json!({
                         "name": skip.name,
                         "reason": skip.reason,
+                        "body": skip.body,
                     }))
                     .collect::<Vec<_>>(),
             })

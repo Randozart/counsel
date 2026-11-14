@@ -126,6 +126,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             skips.push(Skip {
                 name: name.clone(),
                 reason: "no contract".to_string(),
+                body: build::probe_body(item_fn, &sums).err().map(|r| r.to_string()),
             });
             continue;
         }
@@ -136,6 +137,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                 skips.push(Skip {
                     name: name.clone(),
                     reason: reason.to_string(),
+                    body: None,
                 });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {
@@ -150,6 +152,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                 skips.push(Skip {
                     name: name.clone(),
                     reason: reason.to_string(),
+                    body: None,
                 });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {

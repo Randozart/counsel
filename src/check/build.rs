@@ -1195,6 +1195,23 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
 }
 
 /// Whether a function declares a contract worth proving.
+/// Whether a function's **body** translates, independent of any contract.
+///
+/// Synthesises `[true][true]` so the builder runs its body path on a function that
+/// declares no contract at all. `Ok(())` therefore means "one contract away from
+/// being checkable", which is the number a census needs: it separates functions
+/// blocked by a missing annotation from functions blocked by a prover gap.
+pub fn probe_body(
+    item_fn: &syn::ItemFn,
+    sums: &std::collections::HashMap<String, Summary>,
+) -> Result<(), Error> {
+    let mut probe = item_fn.clone();
+    probe.attrs.push(syn::parse_quote!(#[pre(true)]));
+    probe.attrs.push(syn::parse_quote!(#[post(true)]));
+    let inlined = inline_calls(&probe, sums)?;
+    definition_for(&inlined).map(|_| ())
+}
+
 pub fn has_contract(item_fn: &syn::ItemFn) -> bool {
     ["pre", "post", "invariant"]
         .iter()
