@@ -397,9 +397,13 @@ mod tests {
     /// A destructuring binding still needs a value model for tuples, so it is refused
     /// rather than approximated.
     #[test]
-    fn a_destructuring_binding_is_refused() {
-        let err = check_source("#[post(term == 1)]\nfn f() -> i64 { let (a, _b) = (1, 2); a }\n")
-            .expect_err("tuple destructuring is outside the subset");
+    fn a_destructuring_binding_from_a_variable_is_refused() {
+        // A literal tuple destructures (test above); a non-literal tuple still needs a
+        // value model and is refused rather than guessed.
+        let err = check_source(
+            "#[post(term == 1)]\nfn f(pair: (i64, i64)) -> i64 { let (a, _b) = pair; a }\n",
+        )
+        .expect_err("tuple destructuring is outside the subset");
         assert!(err.to_string().contains("plain `let"), "{err}");
     }
 
@@ -500,6 +504,28 @@ mod tests {
             verdicts("#[post(term == 2)]\nfn f(x: i64) -> i64 { println!(\"x={}\", x); assert!(x >= 0); 2 }\n"),
             vec![("f".to_string(), Outcome::Proven)]
         );
+    }
+
+    /// A tuple destructuring from a literal binds each name to the element, soundly.
+    #[test]
+    fn a_tuple_destructuring_from_a_literal_resolves() {
+        assert_eq!(
+            verdicts(
+                "#[pre(x == 1 && y == 2)]\n#[post(term == 3)]\n\
+                 fn f(x: i64, y: i64) -> i64 { let (a, b) = (x, y); a + b }\n"
+            ),
+            vec![("f".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// A destructuring from a non-literal (a tuple VARIABLE) still needs a value model
+    /// and is refused - binding its elements would be guessing.
+    #[test]
+    fn a_tuple_destructuring_from_a_variable_is_refused() {
+        check_source(
+            "#[post(term == 1)]\nfn f(pair: (i64, i64)) -> i64 { let (a, _b) = pair; a }\n",
+        )
+        .expect_err("a non-literal tuple cannot be destructured");
     }
 
     /// A true identity is discharged with no compiler, no text and no process.

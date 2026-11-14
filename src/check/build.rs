@@ -419,6 +419,32 @@ fn binding_ident(pat: &syn::Pat) -> Option<&syn::PatIdent> {
 fn statement(stmt: &syn::Stmt, is_last: bool, out: &mut Vec<Stmt>) -> Result<(), Error> {
     match stmt {
         syn::Stmt::Local(local) => {
+            // `let (a, b) = (x, y)` from a literal is sound: tuple construction is
+            // pure, so each name is exactly the corresponding element. A non-literal
+            // RHS, a nested or `ref` pattern, or an arity mismatch still needs a tuple
+            // value model and is refused rather than approximated.
+            if let (syn::Pat::Tuple(tuple), Some(init)) = (&local.pat, &local.init) {
+                if let syn::Expr::Tuple(literal) = init.expr.as_ref() {
+                    let plain = tuple.elems.iter().all(|element| {
+                        matches!(
+                            element,
+                            syn::Pat::Ident(id) if id.by_ref.is_none() && id.subpat.is_none()
+                        )
+                    });
+                    if plain && literal.elems.len() == tuple.elems.len() {
+                        for (pat, value) in tuple.elems.iter().zip(literal.elems.iter()) {
+                            let syn::Pat::Ident(id) = pat else {
+                                unreachable!()
+                            };
+                            out.push(Stmt::Let {
+                                name: id.ident.to_string(),
+                                value: expr(value, true)?,
+                            });
+                        }
+                        return Ok(());
+                    }
+                }
+            }
             let Some(pat) = binding_ident(&local.pat) else {
                 return Err(Error::Unsupported(
                     "only plain `let x = ...;` bindings are supported".to_string(),
