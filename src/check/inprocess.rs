@@ -42,24 +42,51 @@ fn outcome_of(name: &str, report: &prover::Report) -> Outcome {
     Outcome::Unproven
 }
 
+/// Whether an item is gated behind `#[cfg(test)]`.
+///
+/// Test bodies are not the subject of a contract census: they are full of
+/// `assert!`/`println!` macros, they are not called in production, and including them
+/// inflated the macro rejection count by 819 in the first brievc census.
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("cfg") && format!("{:?}", attr.meta).contains("test"))
+}
+
 /// Every function in a file, including methods inside `impl` blocks and
-/// functions inside inline modules.
+/// functions inside inline modules, excluding `#[cfg(test)]` declarations.
 ///
 /// `file.items` alone yields only top-level free functions, which understates a
 /// real Rust codebase by more than half — most of brievc's logic is methods. A
 /// census that silently omits them is worse than no census, because its number
 /// looks authoritative. Re-exports (`mod x;`) are not followed: they are a
 /// different file, and each file is checked on its own.
-fn collect_functions(items: &[syn::Item], out: &mut Vec<(String, syn::ItemFn)>) {
+fn collect_functions(
+    items: &[syn::Item],
+    out: &mut Vec<(String, syn::ItemFn)>,
+    excluded: &mut usize,
+) {
     for item in items {
         match item {
             syn::Item::Fn(item_fn) => {
+                if is_cfg_test(&item_fn.attrs) {
+                    *excluded += 1;
+                    continue;
+                }
                 out.push((item_fn.sig.ident.to_string(), item_fn.clone()));
             }
             syn::Item::Impl(item_impl) => {
+                if is_cfg_test(&item_impl.attrs) {
+                    *excluded += 1;
+                    continue;
+                }
                 let owner = type_name(&item_impl.self_ty);
                 for entry in &item_impl.items {
                     if let syn::ImplItem::Fn(item_fn) = entry {
+                        if is_cfg_test(&item_fn.attrs) {
+                            *excluded += 1;
+                            continue;
+                        }
                         let name = match &owner {
                             Some(owner) => format!("{owner}::{}", item_fn.sig.ident),
                             None => item_fn.sig.ident.to_string(),
@@ -79,8 +106,12 @@ fn collect_functions(items: &[syn::Item], out: &mut Vec<(String, syn::ItemFn)>) 
                 }
             }
             syn::Item::Mod(module) => {
+                if is_cfg_test(&module.attrs) {
+                    *excluded += 1;
+                    continue;
+                }
                 if let Some((_, inner)) = &module.content {
-                    collect_functions(inner, out);
+                    collect_functions(inner, out, excluded);
                 }
             }
             _ => {}
@@ -120,7 +151,8 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     // value expressions. Summaries are computed once for the whole file.
     let sums = build::build_summaries(&file.items);
     let mut candidates: Vec<(String, syn::ItemFn)> = Vec::new();
-    collect_functions(&file.items, &mut candidates);
+    let mut excluded = 0usize;
+    collect_functions(&file.items, &mut candidates, &mut excluded);
     for (name, item_fn) in &candidates {
         if !build::has_contract(item_fn) {
             // Enumerate it anyway: an unannotated function is neither verified nor
@@ -168,6 +200,11 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                 }
             }
         }
+    }
+    if excluded > 0 {
+        warnings.push(format!(
+            "{excluded} test declaration(s) excluded from the census"
+        ));
     }
     if opaque_assumed > 0 {
         warnings.push(format!(
