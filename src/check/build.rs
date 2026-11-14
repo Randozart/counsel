@@ -107,6 +107,25 @@ fn describe(expr: &syn::Expr) -> String {
         syn::Expr::Closure(_) => "a closure".to_string(),
         syn::Expr::Struct(_) => "a struct literal".to_string(),
         syn::Expr::Try(_) => "the `?` operator".to_string(),
+        // Named rather than lumped together: an unnamed reason is unmeasurable, and
+        // "an expression" was hiding 63 functions in the first vertical-slice census.
+        syn::Expr::If(_) => "an `if` expression in value position".to_string(),
+        syn::Expr::Block(_) => "a block expression".to_string(),
+        syn::Expr::Paren(_) => "a parenthesised expression".to_string(),
+        syn::Expr::Cast(_) => "a cast".to_string(),
+        syn::Expr::Reference(_) => "a reference".to_string(),
+        syn::Expr::Unary(_) => "a unary expression".to_string(),
+        syn::Expr::Binary(_) => "a binary expression".to_string(),
+        syn::Expr::Assign(_) => "an assignment in value position".to_string(),
+        syn::Expr::Tuple(_) => "a tuple literal".to_string(),
+        syn::Expr::Array(_) => "an array literal".to_string(),
+        syn::Expr::Range(_) => "a range".to_string(),
+        syn::Expr::Loop(_) => "a `loop` expression".to_string(),
+        syn::Expr::While(_) => "a `while` loop in value position".to_string(),
+        syn::Expr::Let(_) => "a `let` in condition position".to_string(),
+        syn::Expr::Await(_) => "an `.await`".to_string(),
+        syn::Expr::Unsafe(_) => "an `unsafe` block".to_string(),
+        syn::Expr::Repeat(_) => "a repeated array literal".to_string(),
         _ => "an expression outside the integer subset".to_string(),
     }
 }
@@ -509,10 +528,16 @@ fn contract_attr(attrs: &[syn::Attribute], name: &str) -> Result<Option<syn::Exp
 fn signature_facts(name: &str, sig: &syn::Signature) -> Result<Vec<(String, Option<Expr>)>, Error> {
     let mut facts = Vec::new();
     for input in &sig.inputs {
-        let syn::FnArg::Typed(pat_ty) = input else {
-            return Err(Error::Unsupported(format!(
-                "`{name}`: methods with `self` are not supported"
-            )));
+        // A receiver is one more opaque handle: `self` becomes an unconstrained value
+        // with no fact, and every real use of it (field access, a method on it) is
+        // still refused by the expression check. Its mere presence blocked 2,639 of
+        // brievc's functions, which is an admission decision, not a modelling one.
+        let pat_ty = match input {
+            syn::FnArg::Receiver(_) => {
+                facts.push(("self".to_string(), None));
+                continue;
+            }
+            syn::FnArg::Typed(pat_ty) => pat_ty,
         };
         // A parameter the integer model cannot represent — a slice, a pointer, a
         // struct — is admitted as an **opaque** value: no domain fact, and any use
@@ -531,13 +556,11 @@ fn signature_facts(name: &str, sig: &syn::Signature) -> Result<Vec<(String, Opti
             width.and_then(|width| domain_fact(&ident, width)),
         ));
     }
-    if let syn::ReturnType::Type(_, ty) = &sig.output {
-        if width_of(ty).is_none() {
-            return Err(Error::Unsupported(format!(
-                "`{name}`: return type is not an integer type"
-            )));
-        }
-    }
+    // The return type does not have to be an integer either. An opaque return is the
+    // same admission as an opaque parameter: `term` is an unconstrained value, so a
+    // postcondition that tries to say something about it simply fails to prove — it
+    // can never be proved falsely. This was the single largest blocker in the census
+    // (3,626 functions), and it was purely a spelling check on the signature.
     Ok(facts)
 }
 

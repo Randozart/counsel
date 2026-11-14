@@ -378,6 +378,28 @@ mod tests {
         assert!(err.to_string().contains("plain `let"), "{err}");
     }
 
+    /// A `&self` receiver is one more opaque handle: its presence blocked 2,639
+    /// functions, which was an admission decision rather than a modelling one.
+    #[test]
+    fn a_self_receiver_is_admitted_as_opaque() {
+        assert_eq!(
+            verdicts("#[post(term == x)]\nfn get(&self, x: i64) -> i64 { x }\n"),
+            vec![("get".to_string(), Outcome::Proven)]
+        );
+    }
+
+    /// A non-integer return is opaque too, so the body is still examined. A claim
+    /// about `term` then simply fails to prove — it is never proved falsely.
+    #[test]
+    fn a_non_integer_return_is_admitted_as_opaque() {
+        let report = check_source("fn f(x: i64) -> String { W::V(x) }\n").expect("census");
+        assert_eq!(report.skips.len(), 1, "one function");
+        assert_eq!(
+            report.skips[0].body, None,
+            "a body ending in an opaque call must translate"
+        );
+    }
+
     /// A true identity is discharged with no compiler, no text and no process.
     #[test]
     fn proves_a_true_identity() {

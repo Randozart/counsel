@@ -210,13 +210,19 @@ mod tests {
     }
 
     #[test]
-    fn a_non_integer_return_type_is_rejected() {
-        // A non-integer *parameter* is now admitted as opaque (it is never read);
-        // the return is not, because `term` is compared as an integer.
-        let err =
-            check_source("#[pre(a >= 0)]\n#[post(term >= 0)]\nfn f(a: i64) -> String { 0 }\n")
-                .expect_err("a non-integer return must be rejected");
-        assert!(matches!(err, Error::Unsupported(_)), "{err}");
+    fn a_non_integer_return_is_opaque() {
+        // The return is admitted as an opaque value now: its body is still examined,
+        // and a claim about `term` cannot be proved — it is never proved falsely.
+        let report = check_source(
+            "#[pre(a >= 0)]\n#[post(term >= 0)]\nfn f(a: i64) -> String { W::V(a) }\n",
+        )
+        .expect("the body is modellable");
+        assert_eq!(report.verdicts.len(), 1, "{:?}", report.verdicts);
+        assert_eq!(
+            report.verdicts[0].outcome,
+            Outcome::Unproven,
+            "a claim about an opaque return must stay unproven"
+        );
     }
 
     #[test]
