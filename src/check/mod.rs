@@ -91,6 +91,12 @@ pub struct Skip {
     pub name: String,
     /// Why it was not checked, in words.
     pub reason: String,
+    /// The stable code for that reason, for aggregation.
+    ///
+    /// Prose reasons cannot be grouped reliably: they read
+    /// `"<subject>: <construct> — Counsel verifies …"`, so splitting on the first
+    /// colon lands on the wrong one and misattributes rows. The census groups by this.
+    pub code: String,
     /// Whether the *body* is inside the subset, probed with a synthetic contract.
     ///
     /// `None` means the body translates: the function is one annotation away from
@@ -98,6 +104,31 @@ pub struct Skip {
     /// distinction a census turns on, and it has nothing to do with why the
     /// function was skipped (`reason`).
     pub body: Option<String>,
+    /// The stable code for the body rejection, when there is one.
+    ///
+    /// The same prose problem applies to `body`, so the census groups by this.
+    pub body_code: Option<String>,
+}
+
+/// Extract the stable code from a prose skip reason.
+///
+/// `"unsupported expression (pure-integer subset): a method call — Counsel
+/// verifies …"` becomes `"a method call"`. A leading backticked declaration name
+/// (`"`fmt`: …"`) is dropped, since it names the declaration rather than the
+/// construct. Anything unrecognised is returned as-is, so drift shows up in the
+/// census instead of hiding.
+pub fn skip_code(reason: &str) -> String {
+    let base = reason.split(" — ").next().unwrap_or(reason);
+    let base = base
+        .strip_prefix("unsupported expression (pure-integer subset): ")
+        .or_else(|| base.strip_prefix("unsupported statement (pure-integer subset): "))
+        .or_else(|| base.strip_prefix("unsupported statement: "))
+        .unwrap_or(base);
+    let base = match base.split_once(": ") {
+        Some((head, tail)) if head.starts_with('`') => tail,
+        _ => base,
+    };
+    base.trim().to_string()
 }
 
 /// Verdicts for one source file.
@@ -165,6 +196,22 @@ pub(crate) fn display_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skip_codes_strip_prose_and_declaration_names() {
+        assert_eq!(
+            skip_code(
+                "unsupported expression (pure-integer subset): a method call — \
+                 Counsel verifies a pure-integer subset: integer parameters"
+            ),
+            "a method call"
+        );
+        assert_eq!(
+            skip_code("`fmt`: only plain identifier parameters are supported"),
+            "only plain identifier parameters are supported"
+        );
+        assert_eq!(skip_code("no contract"), "no contract");
+    }
 
     #[test]
     fn report_helpers_split_outcomes() {
