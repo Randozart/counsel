@@ -1431,12 +1431,16 @@ fn definition(item_fn: &syn::ItemFn) -> Result<Vec<Defn>, Error> {
 pub fn probe_body(
     item_fn: &syn::ItemFn,
     sums: &std::collections::HashMap<String, Summary>,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let mut probe = item_fn.clone();
     probe.attrs.push(syn::parse_quote!(#[pre(true)]));
     probe.attrs.push(syn::parse_quote!(#[post(true)]));
-    let Inlined { item, .. } = inline_calls(&probe, sums)?;
-    definition_for(&item).map(|_| ())
+    let Inlined { item, opaque, .. } = inline_calls(&probe, sums)?;
+    definition_for(&item)?;
+    // The count lets a census separate "translatable" from "translatable without
+    // leaning on anything we did not model": a body built entirely from opaque values
+    // is translatable and says almost nothing.
+    Ok(opaque)
 }
 
 pub fn has_contract(item_fn: &syn::ItemFn) -> bool {

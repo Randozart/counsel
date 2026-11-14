@@ -161,13 +161,21 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             // Enumerate it anyway: an unannotated function is neither verified nor
             // unknown, it was never an obligation. Reporting the skip is what makes
             // a census over a real codebase possible at all.
-            let probe = build::probe_body(item_fn, &sums);
+            let (body, body_code, opaque) = match build::probe_body(item_fn, &sums) {
+                Ok(assumptions) => (None, None, assumptions),
+                Err(reason) => (
+                    Some(reason.to_string()),
+                    Some(super::skip_code(&reason.to_string())),
+                    0,
+                ),
+            };
             skips.push(Skip {
                 name: name.clone(),
                 reason: "no contract".to_string(),
                 code: "no contract".to_string(),
-                body: probe.as_ref().err().map(|r| r.to_string()),
-                body_code: probe.as_ref().err().map(|r| super::skip_code(&r.to_string())),
+                body,
+                body_code,
+                opaque,
             });
             continue;
         }
@@ -185,6 +193,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                     code: super::skip_code(&reason.to_string()),
                     body: None,
                     body_code: None,
+                    opaque: 0,
                 });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {
@@ -202,6 +211,7 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                     code: super::skip_code(&reason.to_string()),
                     body: None,
                     body_code: None,
+                    opaque: 0,
                 });
                 warnings.push(format!("skipped: {reason}"));
                 if first_error.is_none() {

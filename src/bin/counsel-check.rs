@@ -187,6 +187,7 @@ fn print_json(reports: &[(PathBuf, Report)]) {
                         "code": skip.code,
                         "body": skip.body,
                         "body_code": skip.body_code,
+                        "opaque": skip.opaque,
                     }))
                     .collect::<Vec<_>>(),
             })

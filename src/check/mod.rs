@@ -108,6 +108,11 @@ pub struct Skip {
     ///
     /// The same prose problem applies to `body`, so the census groups by this.
     pub body_code: Option<String>,
+    /// How many values the body had to treat as opaque (0 = fully modelled).
+    ///
+    /// Translatable and meaningful are different claims: a body assembled entirely
+    /// from opaque calls translates perfectly and establishes nothing.
+    pub opaque: usize,
 }
 
 /// Extract the stable code from a prose skip reason.
