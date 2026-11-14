@@ -126,7 +126,9 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
             skips.push(Skip {
                 name: name.clone(),
                 reason: "no contract".to_string(),
-                body: build::probe_body(item_fn, &sums).err().map(|r| r.to_string()),
+                body: build::probe_body(item_fn, &sums)
+                    .err()
+                    .map(|r| r.to_string()),
             });
             continue;
         }
@@ -229,6 +231,16 @@ mod tests {
         assert!(
             names.contains(&"nested"),
             "functions in inline modules must be enumerated: {names:?}"
+        );
+    }
+
+    /// A boolean literal is an integer in this model, exactly as comparisons fold
+    /// to 0/1. Rejecting it blocked 2,802 brievc functions for no semantic reason.
+    #[test]
+    fn boolean_literals_are_integers() {
+        assert_eq!(
+            verdicts("#[pre(true)]\n#[post(term == 1)]\nfn one() -> i64 { 1 }\n"),
+            vec![("one".to_string(), Outcome::Proven)]
         );
     }
 

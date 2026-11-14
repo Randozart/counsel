@@ -136,6 +136,11 @@ fn expr(node: &syn::Expr, allow_ident: bool) -> Result<Expr, Error> {
                     Error::Unsupported(format!("integer literal out of range: {digits}"))
                 })
             }
+            // 2026-11-14: a boolean literal is an integer in this model, exactly as
+            // comparisons fold (`symbolic.rs`: `i64::from(left < right)`). Rejecting
+            // it blocked 2,802 of brievc's functions for no semantic reason — the
+            // most common single rejection reason in the census after method calls.
+            syn::Lit::Bool(value) => Ok(lit(i64::from(value.value))),
             other => Err(Error::Unsupported(format!(
                 "unsupported literal (integers only): {other:?}"
             ))),
