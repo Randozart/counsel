@@ -113,6 +113,9 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
     let mut warnings = Vec::new();
     let mut first_error: Option<Error> = None;
     let mut contracted = 0usize;
+    // Calls with no summary are treated as opaque, which is sound but hides the
+    // interprocedural gap. Count them so the file reports the assumption.
+    let mut opaque_assumed = 0usize;
     // Calls are resolved on the `syn` tree first, so the builder only ever sees
     // value expressions. Summaries are computed once for the whole file.
     let sums = build::build_summaries(&file.items);
@@ -134,7 +137,10 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
         }
         contracted += 1;
         let inlined = match build::inline_calls(item_fn, &sums) {
-            Ok(inlined) => inlined,
+            Ok(result) => {
+                opaque_assumed += result.unresolved;
+                result.item
+            }
             Err(reason) => {
                 skips.push(Skip {
                     name: name.clone(),
@@ -162,6 +168,11 @@ pub fn check_source(source: &str) -> Result<Report, Error> {
                 }
             }
         }
+    }
+    if opaque_assumed > 0 {
+        warnings.push(format!(
+            "{opaque_assumed} call(s) treated as opaque: no contract or body was available"
+        ));
     }
     if contracted > 0 && items.is_empty() {
         return Err(first_error.unwrap_or(Error::Unsupported(
@@ -433,21 +444,25 @@ mod tests {
     #[test]
     fn refuses_a_call_to_a_preconditioned_helper() {
         let source = "#[pre(a > 0)]\nfn guarded(a: i64) -> i64 { a }\n\
-                      #[post(term >= 0)]\nfn uses(a: i64) -> i64 { guarded(a) }\n";
-        // Masking keeps the other declarations: the caller is skipped with a
-        // warning rather than failing the whole file.
+                      #[post(term == 1)]\nfn uses(a: i64) -> i64 { guarded(a) }\n";
+        // The helper's precondition is not established at the call site, so inlining
+        // it would be unsound. It stays opaque: the caller can never be proven from a
+        // claim about the result, and the assumption is reported rather than hidden.
         let report = check_source(source).expect("the other function still verifies");
         assert!(
-            report.verdicts.iter().all(|verdict| verdict.name != "uses"),
-            "an unresolved call must never be reported: {:?}",
+            report
+                .verdicts
+                .iter()
+                .all(|verdict| verdict.name != "uses" || verdict.outcome != Outcome::Proven),
+            "an opaque call result must never be reported as proven: {:?}",
             report.verdicts
         );
         assert!(
             report
                 .warnings
                 .iter()
-                .any(|w| w.contains("a function call")),
-            "{:?}",
+                .any(|warning| warning.contains("opaque")),
+            "the opaque assumption must be reported: {:?}",
             report.warnings
         );
     }

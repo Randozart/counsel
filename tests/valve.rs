@@ -103,8 +103,11 @@ fn uncontracted_functions_are_ignored() {
 /// Unsupported constructs are rejected with a clear, non-compiler error.
 #[test]
 fn unsupported_constructs_are_rejected() {
-    let err = check_source("#[post(term >= 0)]\nfn f(a: i64) -> i64 { helper(a) }\n")
-        .expect_err("calls are outside the subset");
+    // An unmodelled *call* is now treated as opaque, with the assumption recorded in
+    // Report.warnings. A construct with no value model at all is still refused rather
+    // than guessed — that is the valve this test guards.
+    let err = check_source("#[post(term >= 0)]\nfn f(a: i64) -> i64 { a[0] }\n")
+        .expect_err("indexing is outside the subset");
     assert!(err.to_string().contains("pure-integer subset"), "{err}");
 }
 
@@ -161,7 +164,10 @@ fn unsupported_construct_is_named_not_dumped() {
     let err = check_source("#[post(term >= 1)]\nfn f(a: i64) -> i64 { a.pow(2) }\n")
         .expect_err("a method call outside the whitelist has no translation");
     let text = format!("{err}");
-    assert!(text.contains("a method call"), "expected a construct name: {text}");
+    assert!(
+        text.contains("a method call"),
+        "expected a construct name: {text}"
+    );
     assert!(
         !text.contains("Expr::MethodCall"),
         "the message must not dump the syntax tree: {text}"

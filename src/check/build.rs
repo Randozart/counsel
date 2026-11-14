@@ -1097,21 +1097,38 @@ fn single_value(block_node: &syn::Block) -> Option<syn::Expr> {
 }
 
 /// Resolve summarised calls to the callee's value before building nodes.
+/// The result of inlining: the rewritten function, plus what had to be assumed.
+///
+/// `opaque` counts unmodelled computations (constructors, associated functions)
+/// that became opaque values. `unresolved` counts calls whose callee had no
+/// summary — the interprocedural gap. They are reported separately because one is
+/// by design and the other is a missing capability.
+pub struct Inlined {
+    pub item: syn::ItemFn,
+    pub opaque: usize,
+    pub unresolved: usize,
+}
+
 pub fn inline_calls(
     item_fn: &syn::ItemFn,
     sums: &std::collections::HashMap<String, Summary>,
-) -> Result<syn::ItemFn, Error> {
+) -> Result<Inlined, Error> {
     let mut inlined = item_fn.clone();
     let mut inliner = Inliner {
         sums,
         stack: Vec::new(),
         failure: None,
         opaque: 0,
+        unresolved: 0,
     };
     syn::visit_mut::VisitMut::visit_item_fn_mut(&mut inliner, &mut inlined);
     match inliner.failure {
         Some(error) => Err(error),
-        None => Ok(inlined),
+        None => Ok(Inlined {
+            item: inlined,
+            opaque: inliner.opaque,
+            unresolved: inliner.unresolved,
+        }),
     }
 }
 
@@ -1122,6 +1139,27 @@ struct Inliner<'a> {
     failure: Option<Error>,
     /// How many opaque values have been minted for this function (L2a).
     opaque: usize,
+    /// How many of those stood in for an unresolved *call* (L6 gap), as opposed to
+    /// an unmodelled constructor.
+    unresolved: usize,
+}
+
+impl Inliner<'_> {
+    /// Replace `node` with a fresh opaque symbol, one per occurrence.
+    ///
+    /// Returns false only if the symbol could not be built, which the caller treats
+    /// as a hard error rather than silently leaving an unmodelled call in place.
+    fn mint_opaque(&mut self, node: &mut syn::Expr) -> bool {
+        let fresh = format!("__uf{}", self.opaque);
+        match syn::parse_str::<syn::Expr>(&fresh) {
+            Ok(replacement) => {
+                self.opaque += 1;
+                *node = replacement;
+                true
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 impl syn::visit_mut::VisitMut for Inliner<'_> {
@@ -1161,6 +1199,14 @@ impl syn::visit_mut::VisitMut for Inliner<'_> {
             return;
         };
         let Some(summary) = self.sums.get(&name) else {
+            // No summary: the callee is in another file, has a precondition, or its
+            // body is outside the subset. The value is unmodelled, so it becomes an
+            // opaque symbol — occurrence-distinct, arguments dropped, no fact
+            // assumed. The count is reported so the interprocedural gap stays
+            // visible instead of silently becoming coverage.
+            if self.mint_opaque(node) {
+                self.unresolved += 1;
+            }
             return;
         };
         if self.stack.iter().any(|seen| seen == &name) {
@@ -1243,8 +1289,8 @@ pub fn probe_body(
     let mut probe = item_fn.clone();
     probe.attrs.push(syn::parse_quote!(#[pre(true)]));
     probe.attrs.push(syn::parse_quote!(#[post(true)]));
-    let inlined = inline_calls(&probe, sums)?;
-    definition_for(&inlined).map(|_| ())
+    let Inlined { item, .. } = inline_calls(&probe, sums)?;
+    definition_for(&item).map(|_| ())
 }
 
 pub fn has_contract(item_fn: &syn::ItemFn) -> bool {
